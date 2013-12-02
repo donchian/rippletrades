@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title></title>
+	<link rel="stylesheet" href="//netdna.bootstrapcdn.com/bootstrap/3.0.2/css/bootstrap.min.css">
+	<link rel="stylesheet" href="style.css">
+	<script src="//cdnjs.cloudflare.com/ajax/libs/lodash.js/2.2.1/lodash.min.js"></script>
+	<script src="//cdnjs.cloudflare.com/ajax/libs/jquery/2.0.3/jquery.min.js"></script>
+	<script src="//cdnjs.cloudflare.com/ajax/libs/backbone.js/1.1.0/backbone.js"></script>
+	<script src="//marionettejs.com/downloads/backbone.marionette.min.js"></script>
+	<script src="//cdnjs.cloudflare.com/ajax/libs/handlebars.js/1.1.2/handlebars.min.js"></script>
+	<script src="//netdna.bootstrapcdn.com/bootstrap/3.0.2/js/bootstrap.min.js"></script>
+	<script src="backbone.deepmodel.js"></script>
+	<script src="sjcl.js" type="text/javascript"></script>
+	<script src="ripple-0.7.30.js" type="text/javascript"></script>
+	<script src="models.js" type="text/javascript"></script>
+	<script src="views.js" type="text/javascript"></script>
+	<script src="app.js" type="text/javascript"></script>
+</head>
+<body>
+	<div id="layout"></div>
+	<script id="exchange-layout" type="text/template">
+		<div class="row">
+			<div id="left" class="col-md-10"></div>
+			<div id="right" class="col-md-2"></div>
+		</div>
+	</script>
+	<script id="exchange-template" type="text/template">
+		<div class="panel-heading" data-toggle="collapse" data-parent="#exchanges" data-target="#{{issuer}}">
+			{{nickname issuer}}
+		</div>
+		<div id="{{issuer}}" class="panel-collapse collapse list-group">
+			<div id="markets"></div>
+		</div>
+	</script>
+	<script id="market-template" type="text/template">
+		<span>{{gets}}/{{pays}}</span> 
+		<span class="badge">{{tradeCount}}</span>
+		<span class="badge">{{percent spreadPercent}}</span>
+	</script>
+	<script id="book-template" type="text/template">
+		<div class="panel panel-primary">
+			<div class="panel-heading text-center">{{nickname issuer}} {{pays}}/{{gets}}</div>
+			<table class="table table-bordered table-striped table-condensed">
+				<thead id="header"></thead>
+				<tbody id="asks"></tbody>
+				<tbody id="spread"></tbody>
+				<tbody id="bids"></tbody>
+				<tbody id="trades"></tbody>
+			</table>
+		</div>
+	</script>
+	<script id="header-template" type="text/template">
+		<th>Price {{pays}}</th>
+		<th>Amount {{gets}}</th>
+		<th>Sum {{gets}}</th>
+	</script>
+	<script id="order-template" type="text/template">
+		<td>{{format price}}</td>
+		<td>{{format amount}} {{#if funded.is_valid}}({{format funded}}%){{/if}}</td>
+		<td>{{format sum}}</td>
+	</script>
+	<script id="spread-template" type="text/template">
+		<td colspan="3" class="text-center">{{#if spread}}Spread: {{format spread}} {{pays}}{{/if}}</td>
+	</script>
+	<script id="trade-template" type="text/template">
+		<td>{{format price}}</td>
+		<td>{{format amount}}</td>
+		<td>{{type}}</td>
+	</script>
+</body>
+</html>
