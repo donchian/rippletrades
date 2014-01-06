@@ -20,7 +20,8 @@ var nicknames={
 	"rLEsXccBGNR3UPuPu2hUXPjziKC3qKSBun"	: "Rock Trading",
 	"rGwUWgN5BEg3QGNY3RX2HfYowjUTZdid3E"	: "DYM",
 	"rM3CxdfWgPqjFe6fta7bYTNmTcvfYoXQpC"	: "BlocToc",
-	"rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"	: "Justcoin"
+	"rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"	: "Justcoin",
+	"ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"	: "Peercover",
 }
 
 var pairs=[
@@ -42,20 +43,32 @@ var pairs=[
 	//Ripple Israel
 	["XRP","ILS/rNPRNzBB92BVpAhhZr4iXDTveCgV5Pofm9"],
 	["XRP","BTC/rNPRNzBB92BVpAhhZr4iXDTveCgV5Pofm9"],
-
 	["BTC/rNPRNzBB92BVpAhhZr4iXDTveCgV5Pofm9","ILS/rNPRNzBB92BVpAhhZr4iXDTveCgV5Pofm9"],
 	["BTC/rNPRNzBB92BVpAhhZr4iXDTveCgV5Pofm9","LTC/rNPRNzBB92BVpAhhZr4iXDTveCgV5Pofm9"],
 	["LTC/rNPRNzBB92BVpAhhZr4iXDTveCgV5Pofm9","ILS/rNPRNzBB92BVpAhhZr4iXDTveCgV5Pofm9"],
-	
+	//Snapswap
 	["XRP","USD/rMwjYedjc7qqtKYVLiAccJSmCwih4LnE2q"],
-
+	//Ripple China
 	["XRP","BTC/razqQKzJRdB4UxFPWf5NEpEG3WMkmwgcXA"],
 	["XRP","CNY/razqQKzJRdB4UxFPWf5NEpEG3WMkmwgcXA"],
 	["XRP","LTC/razqQKzJRdB4UxFPWf5NEpEG3WMkmwgcXA"],
-
+	//RippleCN
 	["XRP","BTC/rnuF96W4SZoCJmbHYBFoJZpR8eCaxNvekK"],
 	["XRP","CNY/rnuF96W4SZoCJmbHYBFoJZpR8eCaxNvekK"],
 	["XRP","LTC/rnuF96W4SZoCJmbHYBFoJZpR8eCaxNvekK"],
+	//Peercover
+	["XRP","BTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
+	["XRP","LTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
+	["XRP","NXT/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
+	["NXT/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV","BTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
+	//JustCoin
+	["XRP","BTC/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"]
+	// ["XRP","NOK/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"],
+	// ["XRP","LTC/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"],
+	// ["XRP","EUR/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"],
+	// ["BTC/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1","EUR/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"],
+	// ["BTC/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1","NOK/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"],
+	// ["BTC/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1","LTC/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"]
 ];
 
 var precisions={
@@ -65,11 +78,13 @@ var precisions={
 	"JPY": 5,
 	"EUR": 5,
 	"USD": 5,
-	"BTC": 8,
-	"LTC": 8,
+	"BTC": 5,
+	"NXT": 5,
+	"LTC": 5,
 	"XRP": 5,
 	"CNY": 5,
-	"ILS": 5
+	"ILS": 5,
+	"NOK": 5,
 }
 
 var remote = new ripple.Remote({
@@ -80,7 +95,7 @@ var remote = new ripple.Remote({
 	  fee_cushion:     1.5,
 	  servers: [
 	      { host: 's_west.ripple.com', port: 443, secure: true },
-	      { host: 's_east.ripple.com', port: 443, secure: true }
+	      { host: 's_east.ripple.com', port: 443, secure: true },
 	  ]
 	}).on('state',function(state){
 		console.log('state',state);

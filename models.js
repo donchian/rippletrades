@@ -78,10 +78,16 @@ var Orders=Backbone.Collection.extend({
 	},
 	initialize: function(models,options){
 		this.flip=options.flip;
-		options.remote.book.apply(options.remote,options.sub)
-			.on('model',_.bind(this.update,this))
+		this.book=options.remote.book.apply(options.remote,options.sub);
+		this.book.on('model',_.bind(this.update,this))
     		.on('trade',_.bind(this.trade,this))
     		.on('transaction',_.bind(this.transaction,this));
+    	options.remote.on("connect",this.refresh)
+	},
+	refresh: function(){
+		this.book.offers(function(){
+			console.log("refreshed");
+		});
 	},
 	top: function(n){
 		return this.flip?this.first(n):this.last(n);

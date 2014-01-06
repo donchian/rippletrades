@@ -51,17 +51,18 @@ var ripple =
 
 	exports.Remote           = require(1).Remote;
 	exports.Request          = require(2).Request;
-	exports.Amount           = require(3).Amount;
-	exports.Currency         = require(4).Currency;
-	exports.Base             = require(5).Base;
-	exports.UInt160          = require(3).UInt160;
-	exports.Seed             = require(3).Seed;
-	exports.Transaction      = require(6).Transaction;
+	exports.Amount           = require(14).Amount;
+	exports.Account          = require(3).Account;
+	exports.Transaction      = require(4).Transaction;
+	exports.Currency         = require(5).Currency;
+	exports.Base             = require(6).Base;
+	exports.UInt160          = require(14).UInt160;
+	exports.Seed             = require(14).Seed;
 	exports.Meta             = require(7).Meta;
 	exports.SerializedObject = require(8).SerializedObject;
-	exports.RippleError      = require(10).RippleError;
+	exports.RippleError      = require(9).RippleError;
 
-	exports.binformat        = require(9);
+	exports.binformat        = require(10);
 	exports.utils            = require(11);
 	exports.Server           = require(12).Server;
 
@@ -77,7 +78,9 @@ var ripple =
 	exports.config = require(13);
 
 	// camelCase to under_scored API conversion
-	function attachUnderscored(o) {
+	function attachUnderscored(c) {
+	  var o = exports[c];
+
 	  Object.keys(o.prototype).forEach(function(key) {
 	    var UPPERCASE = /([A-Z]{1})[a-z]+/g;
 
@@ -91,9 +94,11 @@ var ripple =
 	  });
 	};
 
-	[ exports.Remote,
-	  exports.Request,
-	  exports.Transaction
+	[ 'Remote',
+	  'Request',
+	  'Transaction',
+	  'Account',
+	  'Server'
 	].forEach(attachUnderscored);
 
 	// vim:sw=2:sts=2:ts=8:et
@@ -120,24 +125,23 @@ var ripple =
 	// instances of this class for network access.
 
 	// npm
-	var EventEmitter = require(25).EventEmitter;
-	var util         = require(26);
+	var EventEmitter = require(28).EventEmitter;
+	var util         = require(25);
 
 	var Request      = require(2).Request;
 	var Server       = require(12).Server;
-	var Amount       = require(3).Amount;
-	var Currency     = require(4).Currency;
-	var UInt160      = require(14).UInt160;
-	var Transaction  = require(6).Transaction;
-	var Account      = require(15).Account;
+	var Amount       = require(14).Amount;
+	var Currency     = require(5).Currency;
+	var UInt160      = require(16).UInt160;
+	var Transaction  = require(4).Transaction;
+	var Account      = require(3).Account;
 	var Meta         = require(7).Meta;
-	var OrderBook    = require(16).OrderBook;
-	var PathFind     = require(17).PathFind;
-	var RippleError  = require(10).RippleError;
-
+	var OrderBook    = require(17).OrderBook;
+	var PathFind     = require(18).PathFind;
+	var RippleError  = require(9).RippleError;
 	var utils        = require(11);
-	var config       = require(13);
 	var sjcl         = require(11).sjcl;
+	var config       = require(13);
 
 	/**
 	    Interface to manage the connection to a Ripple server.
@@ -205,13 +209,6 @@ var ripple =
 	  this.state                 = 'offline'; // 'online', 'offline'
 	  this.retry_timer           = void(0);
 	  this.retry                 = void(0);
-
-	  this._load_base            = 256;
-	  this._load_factor          = 256;
-	  this._fee_ref              = 10;
-	  this._fee_base             = 10;
-	  this._reserve_base         = void(0);
-	  this._reserve_inc          = void(0);
 	  this._connection_count     = 0;
 	  this._connected            = false;
 	  this._connection_offset    = 1000 * (typeof opts.connection_offset === 'number' ? opts.connection_offset : 5)
@@ -278,6 +275,7 @@ var ripple =
 
 	  // This is used to remove Node EventEmitter warnings
 	  var maxListeners = opts.maxListeners || opts.max_listeners || 0;
+
 	  this._servers.concat(this).forEach(function(emitter) {
 	    emitter.setMaxListeners(maxListeners);
 	  });
@@ -341,7 +339,7 @@ var ripple =
 	  var remote = new Remote(serverConfig, trace);
 
 	  function initializeAccount(account) {
-	    var accountInfo = config.accounts[account];
+	    var accountInfo = this.accounts[account];
 	    if (typeof accountInfo === 'object') {
 	      if (accountInfo.secret) {
 	        // Index by nickname
@@ -352,11 +350,7 @@ var ripple =
 	    }
 	  };
 
-	  if (typeof config.accounts === 'object') {
-	    for (var account in config.accounts) {
-	      initializeAccount(account);
-	    }
-	  }
+	  Object.keys(config.accounts || {}).forEach(initializeAccount, config);
 
 	  return remote;
 	};
@@ -377,13 +371,16 @@ var ripple =
 	  server.on('message', serverMessage);
 
 	  function serverConnect() {
-	    self._connection_count++;
-	    self._set_state('online');
 	    if (opts.primary || !self._primary_server) {
 	      self._setPrimaryServer(server);
 	    }
-	    if (self._connection_count === self._servers.length) {
-	      self.emit('ready');
+	    switch (++self._connection_count) {
+	      case 1:
+	        self._setState('online');
+	        break;
+	      case self._servers.length:
+	        self.emit('ready');
+	        break;
 	    }
 	  };
 
@@ -391,8 +388,8 @@ var ripple =
 
 	  function serverDisconnect() {
 	    self._connection_count--;
-	    if (!self._connection_count) {
-	      self._set_state('offline');
+	    if (self._connection_count === 0) {
+	      self._setState('offline');
 	    }
 	  };
 
@@ -410,9 +407,9 @@ var ripple =
 
 	// Set the emitted state: 'online' or 'offline'
 	Remote.prototype._setState = function(state) {
-	  this._trace('remote: set_state: %s', state);
-
 	  if (this.state !== state) {
+	    this._trace('remote: set_state:', state);
+
 	    this.state = state;
 
 	    this.emit('state', state);
@@ -453,6 +450,8 @@ var ripple =
 
 	/**
 	 * Connect to the Ripple network.
+	 *
+	 * param {Function} callback
 	 */
 
 	Remote.prototype.connect = function(online) {
@@ -463,9 +462,11 @@ var ripple =
 	  switch (typeof online) {
 	    case 'undefined':
 	      break;
+
 	    case 'function':
 	      this.once('connect', online);
 	      break;
+
 	    default:
 	      // Downwards compatibility
 	      if (!Boolean(online)) {
@@ -493,9 +494,13 @@ var ripple =
 	/**
 	 * Disconnect from the Ripple network.
 	 */
-	Remote.prototype.disconnect = function(online) {
+	Remote.prototype.disconnect = function(callback) {
 	  if (!this._servers.length) {
 	    throw new Error('No servers available, not disconnecting');
+	  }
+
+	  if (typeof callback === 'function') {
+	    this.once('disconnect', callback);
 	  }
 
 	  this._servers.forEach(function(server) {
@@ -513,9 +518,7 @@ var ripple =
 
 	  try { message = JSON.parse(message); } catch(e) { }
 
-	  var valid = (typeof message === 'object') && (typeof message.type === 'string');
-
-	  if (!valid) {
+	  if (!Remote.isValidMessage(message)) {
 	    // Unexpected response from remote.
 	    this.emit('error', new RippleError('remoteUnexpected', 'Unexpected response from remote'));
 	    return;
@@ -531,12 +534,18 @@ var ripple =
 	      // XXX Also need to consider a slow server or out of order response.
 	      // XXX Be more defensive fields could be missing or of wrong type.
 	      // YYY Might want to do some cache management.
+	      if (!Remote.isValidLedgerData(message)) return;
 
-	      this._ledger_time           = message.ledger_time;
-	      this._ledger_hash           = message.ledger_hash;
-	      this._ledger_current_index  = message.ledger_index + 1;
+	      if (message.ledger_index >= this._ledger_current_index) {
+	        this._ledger_time           = message.ledger_time;
+	        this._ledger_hash           = message.ledger_hash;
+	        this._ledger_current_index  = message.ledger_index + 1;
+	        this.emit('ledger_closed', message, server);
+	      }
+	      break;
 
-	      this.emit('ledger_closed', message, server);
+	    case 'serverStatus':
+	      self.emit('server_status', message);
 	      break;
 
 	    case 'transaction':
@@ -549,24 +558,35 @@ var ripple =
 
 	      if (this._received_tx.hasOwnProperty(hash)) break;
 
-	      this._received_tx[hash] = true;
+	      if (message.transaction.validated) {
+	        this._received_tx[hash] = true;
+	      }
 
-	      this._trace('remote: tx: %s', message);
+	      this._trace('remote: tx:', message);
 
-	      // Process metadata
-	      message.mmeta = new Meta(message.meta);
+	      if (message.meta) {
+	        // Process metadata
+	        message.mmeta = new Meta(message.meta);
 
-	      // Pass the event on to any related Account objects
-	      message.mmeta.getAffectedAccounts().forEach(function(account) {
-	        account = self._accounts[account];
-	        if (account) account.notify(message);
-	      });
+	        // Pass the event on to any related Account objects
+	        message.mmeta.getAffectedAccounts().forEach(function(account) {
+	          account = self._accounts[account];
+	          if (account) account.notify(message);
+	        });
 
-	      // Pass the event on to any related OrderBooks
-	      message.mmeta.getAffectedBooks().forEach(function(book) {
-	        book = self._books[book];
-	        if (book) book.notify(message);
-	      });
+	        // Pass the event on to any related OrderBooks
+	        message.mmeta.getAffectedBooks().forEach(function(book) {
+	          book = self._books[book];
+	          if (book) book.notify(message);
+	        });
+	      } else {
+	        [ 'Account', 'Destination' ].forEach(function(prop) {
+	          var account = message.transaction[prop];
+	          if (account && (account = self.account(account))) {
+	            account.notify(message);
+	          }
+	        });
+	      }
 
 	      this.emit('transaction', message);
 	      this.emit('transaction_all', message);
@@ -580,33 +600,36 @@ var ripple =
 
 	      this.emit('path_find_all', message);
 	      break;
-	    case 'serverStatus':
-	      self.emit('server_status', message);
-
-	      var loadChanged = message.hasOwnProperty('load_base')
-	      && message.hasOwnProperty('load_factor')
-	      && (message.load_base !== self._load_base || message.load_factor !== self._load_factor)
-	      ;
-
-	      if (loadChanged) {
-	        self._load_base   = message.load_base;
-	        self._load_factor = message.load_factor;
-	        var obj = {
-	          load_base:    self._load_base,
-	          load_factor:  self._load_factor,
-	          fee_units:    self.feeTxUnit()
-	        }
-	        self.emit('load', obj);
-	        self.emit('load_changed', obj);
-	      }
-	      break;
 
 	    // All other messages
 	    default:
-	      this._trace('remote: ' + message.type + ': %s', message);
+	      this._trace('remote: ' + message.type + ': ', message);
 	      this.emit('net_' + message.type, message);
 	      break;
 	  }
+	};
+
+	Remote.isValidMessage = function(message) {
+	  return (typeof message === 'object')
+	      && (typeof message.type === 'string');
+	};
+
+	Remote.isValidLedgerData = function(ledger) {
+	  return (typeof ledger              === 'object')
+	      && (typeof ledger.fee_base     === 'number')
+	      && (typeof ledger.fee_ref      === 'number')
+	      && (typeof ledger.fee_base     === 'number')
+	      && (typeof ledger.ledger_hash  === 'string')
+	      && (typeof ledger.ledger_index === 'number')
+	      && (typeof ledger.ledger_time  === 'number')
+	      && (typeof ledger.reserve_base === 'number')
+	      && (typeof ledger.reserve_inc  === 'number')
+	      && (typeof ledger.txn_count    === 'number')
+	};
+
+	Remote.isLoadStatus = function(message) {
+	  return (typeof message.load_base === 'number')
+	      && (typeof message.load_factor === 'number');
 	};
 
 	Remote.prototype.ledgerHash = function() {
@@ -868,6 +891,7 @@ var ripple =
 	    case 'string':
 	      request.ledgerHash(ledger_hash);
 	      break;
+
 	    default:
 	      request.ledgerIndex('validated');
 	      callback = ledger_hash;
@@ -1011,6 +1035,20 @@ var ripple =
 	};
 
 	Remote.prototype.requestBookOffers = function(gets, pays, taker, callback) {
+	  if (gets.hasOwnProperty('pays')) {
+	    var options = gets;
+	    callback = pays;
+	    taker = options.taker;
+	    pays = options.pays;
+	    gets = options.gets;
+	  }
+
+	  var lastArg = arguments[arguments.length - 1];
+
+	  if (typeof lastArg === 'function') {
+	    callback = lastArg;
+	  }
+
 	  var request = new Request(this, 'book_offers');
 
 	  request.message.taker_gets = {
@@ -1062,10 +1100,6 @@ var ripple =
 	  return new Request(this, 'submit').callback(callback);
 	};
 
-	//
-	// Higher level functions.
-	//
-
 	/**
 	 * Create a subscribe request with current subscriptions.
 	 *
@@ -1086,15 +1120,17 @@ var ripple =
 
 	  var request = this.requestSubscribe(feeds);
 
-	  request.once('success', function(message) {
+	  function serverSubscribed(message) {
 	    self._stand_alone = !!message.stand_alone;
 	    self._testnet     = !!message.testnet;
 
 	    if (typeof message.random === 'string') {
 	      var rand = message.random.match(/[0-9A-F]{8}/ig);
+
 	      while (rand && rand.length) {
 	        sjcl.random.addEntropy(parseInt(rand.pop(), 16));
 	      }
+
 	      self.emit('random', utils.hexToArray(message.random));
 	    }
 
@@ -1105,22 +1141,14 @@ var ripple =
 	      self.emit('ledger_closed', message);
 	    }
 
-	    // FIXME Use this to estimate fee.
-	    // XXX When we have multiple server support, most of this should be tracked
-	    //     by the Server objects and then aggregated/interpreted by Remote.
-	    self._load_base     = message.load_base || 256;
-	    self._load_factor   = message.load_factor || 256;
-	    self._fee_ref       = message.fee_ref;
-	    self._fee_base      = message.fee_base;
-	    self._reserve_base  = message.reserve_base;
-	    self._reserve_inc   = message.reserve_inc;
-
 	    self.emit('subscribed');
-	  });
+	  };
+
+	  request.once('success', serverSubscribed);
 
 	  self.emit('prepare_subscribe', request);
 
-	  request.callback(callback);
+	  request.callback(callback, 'subscribed');
 
 	  // XXX Could give error events, maybe even time out.
 
@@ -1175,7 +1203,7 @@ var ripple =
 	    return Amount.from_json(message.node.Balance);
 	  };
 
-	  var args    = Array.prototype.concat.apply(['account_balance', responseFilter], arguments);
+	  var args = Array.prototype.concat.apply(['account_balance', responseFilter], arguments);
 	  var request = Remote.accountRootRequest.apply(this, args);
 
 	  return request;
@@ -1187,7 +1215,7 @@ var ripple =
 	    return message.node.Flags;
 	  };
 
-	  var args    = Array.prototype.concat.apply(['account_flags', responseFilter], arguments);
+	  var args = Array.prototype.concat.apply(['account_flags', responseFilter], arguments);
 	  var request = Remote.accountRootRequest.apply(this, args);
 
 	  return request;
@@ -1199,7 +1227,7 @@ var ripple =
 	    return message.node.OwnerCount;
 	  };
 
-	  var args    = Array.prototype.concat.apply(['owner_count', responseFilter], arguments);
+	  var args = Array.prototype.concat.apply(['owner_count', responseFilter], arguments);
 	  var request = Remote.accountRootRequest.apply(this, args);
 
 	  return request;
@@ -1382,7 +1410,8 @@ var ripple =
 
 	  request.rippleState(account, issuer, currency);
 	  request.ledgerChoose(ledger);
-	  request.once('success', function(message) {
+
+	  function rippleState(message) {
 	    var node            = message.node;
 	    var lowLimit        = Amount.from_json(node.LowLimit);
 	    var highLimit       = Amount.from_json(node.HighLimit);
@@ -1404,8 +1433,9 @@ var ripple =
 	      account_quality_out : ( accountHigh ? node.HighQualityOut : node.LowQualityOut),
 	      peer_quality_out    : (!accountHigh ? node.HighQualityOut : node.LowQualityOut),
 	    });
-	  });
+	  };
 
+	  request.once('success', rippleState);
 	  request.callback(callback, 'ripple_state');
 
 	  return request;
@@ -1551,9 +1581,9 @@ var ripple =
 	 *
 	 * @return {Amount} Final fee in XRP for specified number of fee units.
 	 */
+
 	Remote.prototype.feeTx = function(units) {
-	  var fee_unit = this.feeTxUnit();
-	  return Amount.from_json(String(Math.ceil(units * fee_unit)));
+	  return this._getServer().feeTx(units);
 	};
 
 	/**
@@ -1564,16 +1594,9 @@ var ripple =
 	 *
 	 * @return {Number} Recommended amount for one fee unit as float.
 	 */
+
 	Remote.prototype.feeTxUnit = function() {
-	  var fee_unit = this._fee_base / this._fee_ref;
-
-	  // Apply load fees
-	  fee_unit *= this._load_factor / this._load_base;
-
-	  // Apply fee cushion (a safety margin in case fees rise since we were last updated
-	  fee_unit *= this.fee_cushion;
-
-	  return fee_unit;
+	  return this._getServer().feeTxUnit();
 	};
 
 	/**
@@ -1581,16 +1604,9 @@ var ripple =
 	 *
 	 * Returns the base reserve with load fees and safety margin applied.
 	 */
+
 	Remote.prototype.reserve = function(owner_count) {
-	  var reserve_base = Amount.from_json(String(this._reserve_base));
-	  var reserve_inc  = Amount.from_json(String(this._reserve_inc));
-	  var owner_count  = owner_count || 0;
-
-	  if (owner_count < 0) {
-	    throw new Error('Owner count must not be negative.');
-	  }
-
-	  return reserve_base.add(reserve_inc.product_human(owner_count));
+	  return this._getServer().reserve(owner_count);
 	};
 
 	Remote.prototype.ping = function(host, callback) {
@@ -1627,15 +1643,15 @@ var ripple =
 /***/ 2:
 /***/ function(module, exports, require) {
 
-	var EventEmitter = require(25).EventEmitter;
-	var util         = require(26);
-	var UInt160      = require(14).UInt160;
-	var Currency     = require(4).Currency;
-	var Transaction  = require(6).Transaction;
-	var Account      = require(15).Account;
+	var EventEmitter = require(28).EventEmitter;
+	var util         = require(25);
+	var UInt160      = require(16).UInt160;
+	var Currency     = require(5).Currency;
+	var Transaction  = require(4).Transaction;
+	var Account      = require(3).Account;
 	var Meta         = require(7).Meta;
-	var OrderBook    = require(16).OrderBook;
-	var RippleError  = require(10).RippleError;
+	var OrderBook    = require(17).OrderBook;
+	var RippleError  = require(9).RippleError;
 
 	// Request events emitted:
 	//  'success' : Request successful.
@@ -1868,7 +1884,7 @@ var ripple =
 	  return this;
 	};
 
-	Request.prototype.accounts = function(accounts, realtime) {
+	Request.prototype.accounts = function(accounts, proposed) {
 	  if (!Array.isArray(accounts)) {
 	    accounts = [ accounts ];
 	  }
@@ -1878,8 +1894,8 @@ var ripple =
 	    return UInt160.json_rewrite(account);
 	  });
 
-	  if (realtime) {
-	    this.message.rtAccounts = processedAccounts;
+	  if (proposed) {
+	    this.message.accounts_proposed = processedAccounts;
 	  } else {
 	    this.message.accounts = processedAccounts;
 	  }
@@ -1887,11 +1903,11 @@ var ripple =
 	  return this;
 	};
 
-	Request.prototype.addAccount = function(account, realtime) {
+	Request.prototype.addAccount = function(account, proposed) {
 	  var processedAccount = UInt160.json_rewrite(account);
 
-	  if (realtime) {
-	    this.message.rtAccounts = (this.message.rtAccounts || []).concat(processedAccount);
+	  if (proposed) {
+	    this.message.accounts_proposed = (this.message.accounts_proposed || []).concat(processedAccount);
 	  } else {
 	    this.message.accounts = (this.message.accounts || []).concat(processedAccount);
 	  }
@@ -1899,47 +1915,59 @@ var ripple =
 	  return this;
 	};
 
-	Request.prototype.rtAccounts = function(accounts) {
+	Request.prototype.rtAccounts =
+	Request.prototype.accountsProposed = function(accounts) {
 	  return this.accounts(accounts, true);
 	};
 
+	Request.prototype.addAccountProposed = function(account) {
+	  return this.addAccount(account, true);
+	};
+
 	Request.prototype.books = function(books, snapshot) {
-	  var processedBooks = [ ];
+	  // Reset list of books (this method overwrites the current list)
+	  this.message.books = [ ];
 
 	  for (var i = 0, l = books.length; i < l; i++) {
 	    var book = books[i];
-	    var json = { };
-
-	    function processSide(side) {
-	      if (!book[side]) {
-	        throw new Error('Missing ' + side);
-	      }
-
-	      var obj = json[side] = {
-	        currency: Currency.json_rewrite(book[side].currency)
-	      };
-	      if (obj.currency !== 'XRP') {
-	        obj.issuer = UInt160.json_rewrite(book[side].issuer);
-	      }
-	    }
-
-	    processSide('taker_gets');
-	    processSide('taker_pays');
-
-	    if (snapshot) {
-	      json.snapshot = true;
-	    }
-
-	    if (book.both) {
-	      json.both = true;
-	    }
-
-	    processedBooks.push(json);
+	    this.addBook(book, snapshot);
 	  }
 
-	  this.message.books = processedBooks;
-
 	  return this;
+	};
+
+	Request.prototype.addBook = function (book, snapshot) {
+	  if (!Array.isArray(this.message.books)) {
+	    this.message.books = [];
+	  }
+
+	  var json = { };
+
+	  function processSide(side) {
+	    if (!book[side]) {
+	      throw new Error('Missing ' + side);
+	    }
+
+	    var obj = json[side] = {
+	      currency: Currency.json_rewrite(book[side].currency)
+	    };
+
+	    if (obj.currency !== 'XRP') {
+	      obj.issuer = UInt160.json_rewrite(book[side].issuer);
+	    }
+	  }
+
+	  [ 'taker_gets', 'taker_pays' ].forEach(processSide);
+
+	  if (snapshot) {
+	    json.snapshot = true;
+	  }
+
+	  if (book.both) {
+	    json.both = true;
+	  }
+
+	  this.message.books.push(json);
 	};
 
 	exports.Request = Request;
@@ -1948,6 +1976,2591 @@ var ripple =
 /***/ },
 
 /***/ 3:
+/***/ function(module, exports, require) {
+
+	// Routines for working with an account.
+	//
+	// You should not instantiate this class yourself, instead use Remote#account.
+	//
+	// Events:
+	//   wallet_clean :  True, iff the wallet has been updated.
+	//   wallet_dirty :  True, iff the wallet needs to be updated.
+	//   balance:        The current stamp balance.
+	//   balance_proposed
+	//
+
+	// var network = require("./network.js");
+
+	var EventEmitter       = require(28).EventEmitter;
+	var util               = require(25);
+	var extend             = require(36);
+	var Amount             = require(14).Amount;
+	var UInt160            = require(16).UInt160;
+	var TransactionManager = require(19).TransactionManager;
+
+	/**
+	 * @constructor Account
+	 * @param {Remote} remote
+	 * @param {String} account
+	 */
+
+	function Account(remote, account) {
+	  EventEmitter.call(this);
+
+	  var self = this;
+
+	  this._remote     = remote;
+	  this._account    = UInt160.from_json(account);
+	  this._account_id = this._account.to_json();
+	  this._subs       = 0;
+
+	  // Ledger entry object
+	  // Important: This must never be overwritten, only extend()-ed
+	  this._entry = { };
+
+	  function listenerAdded(type, listener) {
+	    if (~Account.subscribeEvents.indexOf(type)) {
+	      if (!self._subs && self._remote._connected) {
+	        self._remote.request_subscribe()
+	        .add_account(self._account_id)
+	        .broadcast();
+	      }
+	      self._subs += 1;
+	    }
+	  };
+
+	  this.on('newListener', listenerAdded);
+
+	  function listenerRemoved(type, listener) {
+	    if (~Account.subscribeEvents.indexOf(type)) {
+	      self._subs -= 1;
+	      if (!self._subs && self._remote._connected) {
+	        self._remote.request_unsubscribe()
+	        .add_account(self._account_id)
+	        .broadcast();
+	      }
+	    }
+	  };
+
+	  this.on('removeListener', listenerRemoved);
+
+	  function attachAccount(request) {
+	    if (self._account.is_valid() && self._subs) {
+	      request.add_account(self._account_id);
+	    }
+	  };
+
+	  this._remote.on('prepare_subscribe', attachAccount);
+
+	  function handleTransaction(transaction) {
+	    if (!transaction.mmeta) return;
+
+	    var changed = false;
+
+	    transaction.mmeta.each(function(an) {
+	      var isAccount = an.fields.Account === self._account_id;
+	      var isAccountRoot = isAccount && (an.entryType === 'AccountRoot');
+
+	      if (isAccountRoot) {
+	        extend(self._entry, an.fieldsNew, an.fieldsFinal);
+	        changed = true;
+	      }
+	    });
+
+	    if (changed) {
+	      self.emit('entry', self._entry);
+	    }
+	  };
+
+	  this.on('transaction', handleTransaction);
+
+	  this._transactionManager = new TransactionManager(this);
+
+	  return this;
+	};
+
+	util.inherits(Account, EventEmitter);
+
+	/**
+	 * List of events that require a remote subscription to the account.
+	 */
+
+	Account.subscribeEvents = [ 'transaction', 'entry' ];
+
+	Account.prototype.toJson = function() {
+	  return this._account.to_json();
+	};
+
+	/**
+	 * Whether the AccountId is valid.
+	 *
+	 * Note: This does not tell you whether the account exists in the ledger.
+	 */
+
+	Account.prototype.isValid = function() {
+	  return this._account.is_valid();
+	};
+
+	/**
+	 * Request account info
+	 *
+	 * @param {Function} callback
+	 */
+
+	Account.prototype.getInfo = function(callback) {
+	  return this._remote.request_account_info(this._account_id, callback);
+	};
+
+	/**
+	 * Retrieve the current AccountRoot entry.
+	 *
+	 * To keep up-to-date with changes to the AccountRoot entry, subscribe to the
+	 * "entry" event.
+	 *
+	 * @param {Function} callback
+	 */
+
+	Account.prototype.entry = function(callback) {
+	  var self = this;
+	  var callback = typeof callback === 'function' ? callback : function(){};
+
+	  function accountInfo(err, info) {
+	    if (err) {
+	      callback(err);
+	    } else {
+	      extend(self._entry, info.account_data);
+	      self.emit('entry', self._entry);
+	      callback(null, info);
+	    }
+	  };
+
+	  this.getInfo(accountInfo);
+
+	  return this;
+	};
+
+	Account.prototype.getNextSequence = function(callback) {
+	  var callback = typeof callback === 'function' ? callback : function(){};
+
+	  function accountInfo(err, info) {
+	    if (err &&
+	        "object" === typeof err &&
+	        "object" === typeof err.remote &&
+	        err.remote.error === "actNotFound") {
+	      // New accounts will start out as sequence zero
+	      callback(null, 0);
+	    } else if (err) {
+	      callback(err);
+	    } else {
+	      callback(null, info.account_data.Sequence);
+	    }
+	  };
+
+	  this.getInfo(accountInfo);
+
+	  return this;
+	};
+
+	/**
+	 * Retrieve this account's Ripple trust lines.
+	 *
+	 * To keep up-to-date with changes to the AccountRoot entry, subscribe to the
+	 * "lines" event. (Not yet implemented.)
+	 *
+	 * @param {function(err, lines)} callback Called with the result
+	 */
+
+	Account.prototype.lines = function(callback) {
+	  var self = this;
+	  var callback = typeof callback === 'function' ? callback : function(){};
+
+	  function accountLines(err, res) {
+	    if (err) {
+	      callback(err);
+	    } else {
+	      self._lines = res.lines;
+	      self.emit('lines', self._lines);
+	      callback(null, res);
+	    }
+	  }
+
+	  this._remote.requestAccountLines(this._account_id, accountLines);
+
+	  return this;
+	};
+
+	/**
+	 * Retrieve this account's single trust line.
+	 *
+	 * @param {string} currency Currency
+	 * @param {string} address Ripple address
+	 * @param {function(err, line)} callback Called with the result
+	 * @returns {Account}
+	 */
+
+	Account.prototype.line = function(currency,address,callback) {
+	  var self = this;
+	  var found;
+	  var callback = typeof callback === 'function' ? callback : function(){};
+
+	  self.lines(function(err, data) {
+	    if (err) {
+	      callback(err);
+	    } else {
+	      var line = data.lines.filter(function(line) {
+	        if (line.account === address && line.currency === currency) {
+	          return line;
+	        }
+	      })[0];
+
+	      callback(null, line);
+	    }
+	  });
+
+	  return this;
+	};
+
+	/**
+	 * Notify object of a relevant transaction.
+	 *
+	 * This is only meant to be called by the Remote class. You should never have to
+	 * call this yourself.
+	 *
+	 * @param {Object} message
+	 */
+
+	Account.prototype.notify =
+	Account.prototype.notifyTx = function(transaction) {
+	  // Only trigger the event if the account object is actually
+	  // subscribed - this prevents some weird phantom events from
+	  // occurring.
+	  if (this._subs) {
+	    this.emit('transaction', transaction);
+
+	    var account = transaction.transaction.Account;
+
+	    if (!account) return;
+
+	    var isThisAccount = account === this._account_id;
+
+	    this.emit(isThisAccount ? 'transaction-outbound' : 'transaction-inbound', transaction);
+	  }
+	};
+
+	/**
+	 * Submit a transaction to an account's
+	 * transaction manager
+	 *
+	 * @param {Transaction} transaction
+	 */
+
+	Account.prototype.submit = function(transaction) {
+	  this._transactionManager.submit(transaction);
+	};
+
+	exports.Account = Account;
+
+	// vim:sw=2:sts=2:ts=8:et
+
+
+/***/ },
+
+/***/ 4:
+/***/ function(module, exports, require) {
+
+	// Transactions
+	//
+	//  Construction:
+	//    remote.transaction()  // Build a transaction object.
+	//     .offer_create(...)   // Set major parameters.
+	//     .set_flags()         // Set optional parameters.
+	//     .on()                // Register for events.
+	//     .submit();           // Send to network.
+	//
+	//  Events:
+	// 'success' : Transaction submitted without error.
+	// 'error' : Error submitting transaction.
+	// 'proposed' : Advisory proposed status transaction.
+	// - A client should expect 0 to multiple results.
+	// - Might not get back. The remote might just forward the transaction.
+	// - A success could be reverted in final.
+	// - local error: other remotes might like it.
+	// - malformed error: local server thought it was malformed.
+	// - The client should only trust this when talking to a trusted server.
+	// 'final' : Final status of transaction.
+	// - Only expect a final from dishonest servers after a tesSUCCESS or ter*.
+	// 'lost' : Gave up looking for on ledger_closed.
+	// 'pending' : Transaction was not found on ledger_closed.
+	// 'state' : Follow the state of a transaction.
+	//    'client_submitted'     - Sent to remote
+	//     |- 'remoteError'      - Remote rejected transaction.
+	//      \- 'client_proposed' - Remote provisionally accepted transaction.
+	//       |- 'client_missing' - Transaction has not appeared in ledger as expected.
+	//       | |\- 'client_lost' - No longer monitoring missing transaction.
+	//       |/
+	//       |- 'tesSUCCESS'     - Transaction in ledger as expected.
+	//       |- 'ter...'         - Transaction failed.
+	//       \- 'tec...'         - Transaction claimed fee only.
+	//
+	// Notes:
+	// - All transactions including those with local and malformed errors may be
+	//   forwarded anyway.
+	// - A malicous server can:
+	//   - give any proposed result.
+	//     - it may declare something correct as incorrect or something correct as incorrect.
+	//     - it may not communicate with the rest of the network.
+	//   - may or may not forward.
+	//
+
+	var EventEmitter     = require(28).EventEmitter;
+	var util             = require(25);
+	var sjcl             = require(11).sjcl;
+	var Amount           = require(14).Amount;
+	var Currency         = require(14).Currency;
+	var UInt160          = require(14).UInt160;
+	var Seed             = require(24).Seed;
+	var SerializedObject = require(8).SerializedObject;
+	var RippleError      = require(9).RippleError;
+	var hashprefixes     = require(23);
+	var config           = require(13);
+
+	// A class to implement transactions.
+	// - Collects parameters
+	// - Allow event listeners to be attached to determine the outcome.
+	function Transaction(remote) {
+	  EventEmitter.call(this);
+
+	  var self  = this;
+
+	  this.remote                 = remote;
+	  this._secret                = void(0);
+	  this._build_path            = false;
+
+	  // Transaction data.
+	  this.tx_json                = { Flags: 0 };
+
+	  // ledger_current_index was this when transaction was submited.
+	  this.submit_index           = void(0);
+
+	  // Under construction.
+	  this.state                  = void(0);
+
+	  this.finalized              = false;
+	  this._previous_signing_hash = void(0);
+
+	  // We aren't clever enough to eschew preventative measures so we keep an array
+	  // of all submitted transactionIDs (which can change due to load_factor
+	  // effecting the Fee amount). This should be populated with a transactionID
+	  // any time it goes on the network
+	  this.submittedTxnIDs = [ ]
+	};
+
+	util.inherits(Transaction, EventEmitter);
+
+	// XXX This needs to be determined from the network.
+	Transaction.fee_units = {
+	  default: 10
+	};
+
+	Transaction.flags = {
+	  AccountSet: {
+	    RequireDestTag:     0x00010000,
+	    OptionalDestTag:    0x00020000,
+	    RequireAuth:        0x00040000,
+	    OptionalAuth:       0x00080000,
+	    DisallowXRP:        0x00100000,
+	    AllowXRP:           0x00200000
+	  },
+
+	  TrustSet: {
+	    SetAuth:            0x00010000,
+	    NoRipple:           0x00020000,
+	    ClearNoRipple:      0x00040000
+	  },
+
+	  OfferCreate: {
+	    Passive:            0x00010000,
+	    ImmediateOrCancel:  0x00020000,
+	    FillOrKill:         0x00040000,
+	    Sell:               0x00080000
+	  },
+
+	  Payment: {
+	    NoRippleDirect:     0x00010000,
+	    PartialPayment:     0x00020000,
+	    LimitQuality:       0x00040000
+	  }
+	};
+
+	Transaction.formats = require(10).tx;
+
+	Transaction.prototype.consts = {
+	  telLOCAL_ERROR:  -399,
+	  temMALFORMED:    -299,
+	  tefFAILURE:      -199,
+	  terRETRY:        -99,
+	  tesSUCCESS:      0,
+	  tecCLAIMED:      100
+	};
+
+	Transaction.from_json = function(j) {
+	  return (new Transaction()).parse_json(j);
+	};
+
+	Transaction.prototype.isTelLocal = function(ter) {
+	  return ter >= this.consts.telLOCAL_ERROR && ter < this.consts.temMALFORMED;
+	};
+
+	Transaction.prototype.isTemMalformed = function(ter) {
+	  return ter >= this.consts.temMALFORMED && ter < this.consts.tefFAILURE;
+	};
+
+	Transaction.prototype.isTefFailure = function(ter) {
+	  return ter >= this.consts.tefFAILURE && ter < this.consts.terRETRY;
+	};
+
+	Transaction.prototype.isTerRetry = function(ter) {
+	  return ter >= this.consts.terRETRY && ter < this.consts.tesSUCCESS;
+	};
+
+	Transaction.prototype.isTepSuccess = function(ter) {
+	  return ter >= this.consts.tesSUCCESS;
+	};
+
+	Transaction.prototype.isTecClaimed = function(ter) {
+	  return ter >= this.consts.tecCLAIMED;
+	};
+
+	Transaction.prototype.isRejected = function(ter) {
+	  return this.isTelLocal(ter) || this.isTemMalformed(ter) || this.isTefFailure(ter);
+	};
+
+	Transaction.prototype.setState = function(state) {
+	  if (this.state !== state) {
+	    this.state  = state;
+	    this.emit('state', state);
+	  }
+	};
+
+	/**
+	 * Returns the number of fee units this transaction will cost.
+	 *
+	 * Each Ripple transaction based on its type and makeup costs a certain number
+	 * of fee units. The fee units are calculated on a per-server basis based on the
+	 * current load on both the network and the server.
+	 *
+	 * @see https://ripple.com/wiki/Transaction_Fee
+	 *
+	 * @return {Number} Number of fee units for this transaction.
+	 */
+
+	Transaction.prototype.getFee =
+	Transaction.prototype.feeUnits = function() {
+	  return Transaction.fee_units['default'];
+	};
+
+	/**
+	 * Get the server whose fee is currently the lowest
+	 */
+
+	Transaction.prototype._getServer = function() {
+	  var self    = this;
+	  var servers = this.remote._servers;
+	  var fee     = Infinity;
+	  var result;
+
+	  for (var i=0; i<servers.length; i++) {
+	    var server = servers[i];
+	    if (!server._connected) continue;
+	    var n = server.computeFee(this);
+	    if (n < fee) {
+	      result = server;
+	      fee = n;
+	    }
+	  }
+
+	  return result;
+	};
+
+	/**
+	 * Attempts to complete the transaction for submission.
+	 *
+	 * This function seeks to fill out certain fields, such as Fee and
+	 * SigningPubKey, which can be determined by the library based on network
+	 * information and other fields.
+	 */
+
+	Transaction.prototype.complete = function() {
+	  // Try to auto-fill the secret
+	  if (!this._secret) {
+	    this._secret = this._account_secret(this.tx_json.Account);
+	  }
+
+	  if (this.remote && typeof this.tx_json.Fee === 'undefined') {
+	    if (this.remote.local_fee || !this.remote.trusted) {
+	      this._server = this._getServer();
+	      this.tx_json.Fee = this._server.computeFee(this);
+	    }
+	  }
+
+	  if (typeof this.tx_json.SigningPubKey === 'undefined') {
+	    var seed = Seed.from_json(this._secret);
+	    var key  = seed.get_key(this.tx_json.Account);
+	    this.tx_json.SigningPubKey = key.to_hex_pub();
+	  }
+
+	  return this.tx_json;
+	};
+
+	Transaction.prototype.serialize = function() {
+	  return SerializedObject.from_json(this.tx_json);
+	};
+
+	Transaction.prototype.signingHash = function() {
+	  return this.hash(config.testnet ? 'HASH_TX_SIGN_TESTNET' : 'HASH_TX_SIGN');
+	};
+
+	Transaction.prototype.addSubmittedTxnID = function(hash) {
+	  if (this.submittedTxnIDs.indexOf(hash) === -1) {
+	    this.submittedTxnIDs.unshift(hash);
+	  }
+	};
+
+	Transaction.prototype.findResultInCache = function(cache) {
+	  var result;
+
+	  for (var i=0; i<this.submittedTxnIDs.length; i++) {
+	    var hash = this.submittedTxnIDs[i];
+	    if (result = cache[hash]) break;
+	  }
+
+	  return result;
+	};
+
+	Transaction.prototype.hash = function(prefix, as_uint256) {
+	  if (typeof prefix === 'string') {
+	    if (typeof hashprefixes[prefix] === 'undefined') {
+	      throw new Error('Unknown hashing prefix requested.');
+	    }
+	    prefix = hashprefixes[prefix];
+	  } else if (!prefix) {
+	    prefix = hashprefixes['HASH_TX_ID'];
+	  }
+
+	  var hash = SerializedObject.from_json(this.tx_json).hash(prefix);
+
+	  return as_uint256 ? hash : hash.to_hex();
+	};
+
+	Transaction.prototype.sign = function() {
+	  var seed = Seed.from_json(this._secret);
+
+	  var prev_sig = this.tx_json.TxnSignature;
+	  delete this.tx_json.TxnSignature;
+
+	  var hash = this.signing_hash();
+
+	  // If the hash is the same, we can re-use the previous signature
+	  if (prev_sig && hash === this._previous_signing_hash) {
+	    this.tx_json.TxnSignature = prev_sig;
+	    return this;
+	  }
+
+	  var key  = seed.get_key(this.tx_json.Account);
+	  var sig  = key.sign(hash, 0);
+	  var hex  = sjcl.codec.hex.fromBits(sig).toUpperCase();
+
+	  this.tx_json.TxnSignature = hex;
+	  this._previous_signing_hash = hash;
+
+	  return this;
+	};
+
+	//
+	// Set options for Transactions
+	//
+
+	// --> build: true, to have server blindly construct a path.
+	//
+	// "blindly" because the sender has no idea of the actual cost except that is must be less than send max.
+	Transaction.prototype.buildPath = function(build) {
+	  this._build_path = build;
+	  return this;
+	};
+
+	// tag should be undefined or a 32 bit integer.
+	// YYY Add range checking for tag.
+	Transaction.prototype.destinationTag = function(tag) {
+	  if (tag !== void(0)) {
+	    this.tx_json.DestinationTag = tag;
+	  }
+	  return this;
+	};
+
+	Transaction.prototype.invoiceID = function(id) {
+	  if (typeof id === 'string') {
+	    while (id.length < 64) id += '0';
+	    this.tx_json.InvoiceID = id;
+	  }
+	  return this;
+	};
+
+	Transaction._pathRewrite = function(path) {
+	  return path.map(function(node) {
+	    var newNode = { };
+
+	    if (node.hasOwnProperty('account')) {
+	      newNode.account = UInt160.json_rewrite(node.account);
+	    }
+
+	    if (node.hasOwnProperty('issuer')) {
+	      newNode.issuer = UInt160.json_rewrite(node.issuer);
+	    }
+
+	    if (node.hasOwnProperty('currency')) {
+	      newNode.currency = Currency.json_rewrite(node.currency);
+	    }
+
+	    return newNode
+	  });
+	};
+
+	Transaction.prototype.pathAdd = function(path) {
+	  if (Array.isArray(path)) {
+	    this.tx_json.Paths  = this.tx_json.Paths || [];
+	    this.tx_json.Paths.push(Transaction._pathRewrite(path));
+	  }
+	  return this;
+	};
+
+	// --> paths: undefined or array of path
+	// // A path is an array of objects containing some combination of: account, currency, issuer
+
+	Transaction.prototype.paths = function(paths) {
+	  if (Array.isArray(paths)) {
+	    for (var i=0, l=paths.length; i<l; i++) {
+	      this.pathAdd(paths[i]);
+	    }
+	  }
+	  return this;
+	};
+
+	// If the secret is in the config object, it does not need to be provided.
+	Transaction.prototype.secret = function(secret) {
+	  this._secret = secret;
+	  return this;
+	};
+
+	Transaction.prototype.sendMax = function(send_max) {
+	  if (send_max) {
+	    this.tx_json.SendMax = Amount.json_rewrite(send_max);
+	  }
+	  return this;
+	};
+
+	// tag should be undefined or a 32 bit integer.
+	// YYY Add range checking for tag.
+	Transaction.prototype.sourceTag = function(tag) {
+	  if (tag) {
+	    this.tx_json.SourceTag = tag;
+	  }
+	  return this;
+	};
+
+	// --> rate: In billionths.
+	Transaction.prototype.transferRate = function(rate) {
+	  this.tx_json.TransferRate = Number(rate);
+
+	  if (this.tx_json.TransferRate < 1e9) {
+	    throw new Error('invalidTransferRate');
+	  }
+
+	  return this;
+	};
+
+	// Add flags to a transaction.
+	// --> flags: undefined, _flag_, or [ _flags_ ]
+	Transaction.prototype.setFlags = function(flags) {
+	  if (!flags) return this;
+
+	  var transaction_flags = Transaction.flags[this.tx_json.TransactionType];
+	  var flag_set = Array.isArray(flags) ? flags : Array.prototype.slice.call(arguments);
+
+	  // We plan to not define this field on new Transaction.
+	  if (this.tx_json.Flags === void(0)) {
+	    this.tx_json.Flags = 0;
+	  }
+
+	  for (var i=0, l=flag_set.length; i<l; i++) {
+	    var flag = flag_set[i];
+	    if (transaction_flags.hasOwnProperty(flag)) {
+	      this.tx_json.Flags += transaction_flags[flag];
+	    } else {
+	      // XXX Immediately report an error or mark it.
+	    }
+	  }
+
+	  return this;
+	};
+
+	Transaction.prototype._accountSecret = function(account) {
+	  // Fill in secret from remote, if available.
+	  return this.remote.secrets[account];
+	};
+
+	// Options:
+	//  .domain()           NYI
+	//  .flags()
+	//  .message_key()      NYI
+	//  .transfer_rate()
+	//  .wallet_locator()   NYI
+	//  .wallet_size()      NYI
+	Transaction.prototype.accountSet = function(src) {
+	  if (typeof src === 'object') {
+	    var options = src;
+	    src = options.source || options.from;
+	  }
+
+	  if (!UInt160.is_valid(src)) {
+	    throw new Error('Source address invalid');
+	  }
+
+	  this.tx_json.TransactionType  = 'AccountSet';
+	  this.tx_json.Account          = UInt160.json_rewrite(src);
+	  return this;
+	};
+
+	Transaction.prototype.claim = function(src, generator, public_key, signature) {
+	  if (typeof src === 'object') {
+	    var options = src;
+	    signature  = options.signature;
+	    public_key = options.public_key;
+	    generator  = options.generator;
+	    src        = options.source || options.from;
+	  }
+
+	  this.tx_json.TransactionType = 'Claim';
+	  this.tx_json.Generator       = generator;
+	  this.tx_json.PublicKey       = public_key;
+	  this.tx_json.Signature       = signature;
+	  return this;
+	};
+
+	Transaction.prototype.offerCancel = function(src, sequence) {
+	  if (typeof src === 'object') {
+	    var options = src;
+	    sequence = options.sequence;
+	    src      = options.source || options.from;
+	  }
+
+	  if (!UInt160.is_valid(src)) {
+	    throw new Error('Source address invalid');
+	  }
+
+	  this.tx_json.TransactionType = 'OfferCancel';
+	  this.tx_json.Account         = UInt160.json_rewrite(src);
+	  this.tx_json.OfferSequence   = Number(sequence);
+	  return this;
+	};
+
+	// Options:
+	//  .set_flags()
+	// --> expiration : if not undefined, Date or Number
+	// --> cancel_sequence : if not undefined, Sequence
+	Transaction.prototype.offerCreate = function(src, taker_pays, taker_gets, expiration, cancel_sequence) {
+	  if (typeof src === 'object') {
+	    var options = src;
+	    cancel_sequence = options.cancel_sequence;
+	    expiration      = options.expiration;
+	    taker_gets      = options.taker_gets || options.sell;
+	    taker_pays      = options.taker_pays || options.buy;
+	    src             = options.source || options.from;
+	  }
+
+	  if (!UInt160.is_valid(src)) {
+	    throw new Error('Source address invalid');
+	  }
+
+	  this.tx_json.TransactionType = 'OfferCreate';
+	  this.tx_json.Account         = UInt160.json_rewrite(src);
+	  this.tx_json.TakerPays       = Amount.json_rewrite(taker_pays);
+	  this.tx_json.TakerGets       = Amount.json_rewrite(taker_gets);
+
+	  if (expiration) {
+	    switch (expiration.constructor) {
+	      case Date:
+	        //offset = (new Date(2000, 0, 1).getTime()) - (new Date(1970, 0, 1).getTime());
+	        this.tx_json.Expiration = expiration.getTime() - 946684800000;
+	        break;
+	      case Number:
+	        this.tx_json.Expiration = expiration;
+	        break;
+	    }
+	  }
+
+	  if (cancel_sequence) {
+	    this.tx_json.OfferSequence = Number(cancel_sequence);
+	  }
+
+	  return this;
+	};
+
+	Transaction.prototype.passwordFund = function(src, dst) {
+	  if (typeof src === 'object') {
+	    var options = src;
+	    dst = options.destination || options.to;
+	    src = options.source || options.from;
+	  }
+
+	  if (!UInt160.is_valid(dst)) {
+	    throw new Error('Destination address invalid');
+	  }
+
+	  this.tx_json.TransactionType = 'PasswordFund';
+	  this.tx_json.Destination     = UInt160.json_rewrite(dst);
+	  return this;
+	};
+
+	Transaction.prototype.passwordSet = function(src, authorized_key, generator, public_key, signature) {
+	  if (typeof src === 'object') {
+	    var options = src;
+	    signature      = options.signature;
+	    public_key     = options.public_key;
+	    generator      = options.generator;
+	    authorized_key = options.authorized_key;
+	    src            = options.source || options.from;
+	  }
+
+	  if (!UInt160.is_valid(src)) {
+	    throw new Error('Source address invalid');
+	  }
+
+	  this.tx_json.TransactionType = 'PasswordSet';
+	  this.tx_json.RegularKey      = authorized_key;
+	  this.tx_json.Generator       = generator;
+	  this.tx_json.PublicKey       = public_key;
+	  this.tx_json.Signature       = signature;
+	  return this;
+	};
+
+	// Construct a 'payment' transaction.
+	//
+	// When a transaction is submitted:
+	// - If the connection is reliable and the server is not merely forwarding and is not malicious,
+	// --> src : UInt160 or String
+	// --> dst : UInt160 or String
+	// --> deliver_amount : Amount or String.
+	//
+	// Options:
+	//  .paths()
+	//  .build_path()
+	//  .destination_tag()
+	//  .path_add()
+	//  .secret()
+	//  .send_max()
+	//  .set_flags()
+	//  .source_tag()
+	Transaction.prototype.payment = function(src, dst, amount) {
+	  if (typeof src === 'object') {
+	    var options = src;
+	    amount = options.amount;
+	    dst    = options.destination || options.to;
+	    src    = options.source || options.from;
+	    if (options.invoiceID) {
+	      this.invoiceID(options.invoiceID);
+	    }
+	  }
+
+	  if (!UInt160.is_valid(src)) {
+	    throw new Error('Payment source address invalid');
+	  }
+
+	  if (!UInt160.is_valid(dst)) {
+	    throw new Error('Payment destination address invalid');
+	  }
+
+	  if (/^[\d]+[A-Z]{3}$/.test(amount)) {
+	    amount = Amount.from_human(amount);
+	  }
+
+	  this.tx_json.TransactionType = 'Payment';
+	  this.tx_json.Account         = UInt160.json_rewrite(src);
+	  this.tx_json.Amount          = Amount.json_rewrite(amount);
+	  this.tx_json.Destination     = UInt160.json_rewrite(dst);
+
+	  return this;
+	};
+
+	Transaction.prototype.rippleLineSet = function(src, limit, quality_in, quality_out) {
+	  if (typeof src === 'object') {
+	    var options = src;
+	    quality_out = options.quality_out;
+	    quality_in  = options.quality_in;
+	    limit       = options.limit;
+	    src         = options.source || options.from;
+	  }
+
+	  if (!UInt160.is_valid(src)) {
+	    throw new Error('Source address invalid');
+	  }
+
+	  this.tx_json.TransactionType = 'TrustSet';
+	  this.tx_json.Account         = UInt160.json_rewrite(src);
+
+	  if (limit !== void(0)) {
+	    this.tx_json.LimitAmount = Amount.json_rewrite(limit);
+	  }
+
+	  if (quality_in) {
+	    this.tx_json.QualityIn = quality_in;
+	  }
+
+	  if (quality_out) {
+	    this.tx_json.QualityOut = quality_out;
+	  }
+
+	  // XXX Throw an error if nothing is set.
+
+	  return this;
+	};
+
+	Transaction.prototype.walletAdd = function(src, amount, authorized_key, public_key, signature) {
+	  if (typeof src === 'object') {
+	    var options = src;
+	    signature      = options.signature;
+	    public_key     = options.public_key;
+	    authorized_key = options.authorized_key;
+	    amount         = options.amount;
+	    src            = options.source || options.from;
+	  }
+
+	  if (!UInt160.is_valid(src)) {
+	    throw new Error('Source address invalid');
+	  }
+
+	  this.tx_json.TransactionType  = 'WalletAdd';
+	  this.tx_json.Amount           = Amount.json_rewrite(amount);
+	  this.tx_json.RegularKey       = authorized_key;
+	  this.tx_json.PublicKey        = public_key;
+	  this.tx_json.Signature        = signature;
+	  return this;
+	};
+
+	// Submit a transaction to the network.
+	Transaction.prototype.submit = function(callback) {
+	  var self = this;
+
+	  this.callback = typeof callback === 'function' ? callback : function(){};
+
+	  function submissionError(error, message) {
+	    if (!(error instanceof RippleError)) {
+	      error = new RippleError(error, message);
+	    }
+	    self.callback(error);
+	  };
+
+	  this.once('error', submissionError);
+
+	  function submissionSuccess(message) {
+	    self.callback(null, message);
+	  };
+
+	  this.once('success', submissionSuccess);
+
+	  this.on('error', function(){});
+
+	  var account = this.tx_json.Account;
+
+	  if (typeof account !== 'string') {
+	    this.emit('error', new RippleError('tejInvalidAccount', 'Account is unspecified'));
+	  } else {
+	    // YYY Might check paths for invalid accounts.
+	    this.remote.account(account).submit(this);
+	  }
+
+	  return this;
+	};
+
+	Transaction.prototype.abort = function(callback) {
+	  if (!this.finalized) {
+	    var callback = typeof callback === 'function' ? callback : function(){};
+	    this.once('final', callback);
+	    this.emit('abort');
+	  }
+	};
+
+	Transaction.prototype.parseJson = function(v) {
+	  this.tx_json = v;
+	  return this;
+	};
+
+	exports.Transaction = Transaction;
+
+	// vim:sw=2:sts=2:ts=8:et
+
+
+/***/ },
+
+/***/ 5:
+/***/ function(module, exports, require) {
+
+	
+	//
+	// Currency support
+	//
+
+	// XXX Internal form should be UInt160.
+	function Currency() {
+	  // Internal form: 0 = XRP. 3 letter-code.
+	  // XXX Internal should be 0 or hex with three letter annotation when valid.
+
+	  // Json form:
+	  //  '', 'XRP', '0': 0
+	  //  3-letter code: ...
+	  // XXX Should support hex, C++ doesn't currently allow it.
+
+	  this._value  = NaN;
+	};
+
+	// Given "USD" return the json.
+	Currency.json_rewrite = function (j) {
+	  return Currency.from_json(j).to_json();
+	};
+
+	Currency.from_json = function (j) {
+	  return j instanceof Currency ? j.clone() : new Currency().parse_json(j);
+	};
+
+	Currency.from_bytes = function (j) {
+	  return j instanceof Currency ? j.clone() : new Currency().parse_bytes(j);
+	};
+
+	Currency.is_valid = function (j) {
+	  return Currency.from_json(j).is_valid();
+	};
+
+	Currency.prototype.clone = function() {
+	  return this.copyTo(new Currency());
+	};
+
+	// Returns copy.
+	Currency.prototype.copyTo = function (d) {
+	  d._value = this._value;
+	  return d;
+	};
+
+	Currency.prototype.equals = function (d) {
+	  var equals = (typeof this._value !== 'string' && isNaN(this._value))
+	    || (typeof d._value !== 'string' && isNaN(d._value));
+	  return equals ? false: this._value === d._value;
+	};
+
+	// this._value = NaN on error.
+	Currency.prototype.parse_json = function (j) {
+	  var result = NaN;
+
+	  switch (typeof j) {
+	    case 'string':
+	      if (!j || /^(0|XRP)$/.test(j)) {
+	        result = 0;
+	      } else if (/^[a-zA-Z0-9]{3}$/.test(j)) {
+	        result = j;
+	      }
+	      break;
+
+	    case 'number':
+	      if (!isNaN(j)) {
+	        result = j;
+	      }
+	      break;
+
+	    case 'object':
+	      if (j instanceof Currency) {
+	        result = j.copyTo({})._value;
+	      }
+	      break;
+	  }
+
+	  this._value = result;
+
+	  return this;
+	};
+
+	Currency.prototype.parse_bytes = function (byte_array) {
+	  if (Array.isArray(byte_array) && byte_array.length === 20) {
+	    var result;
+	    // is it 0 everywhere except 12, 13, 14?
+	    var isZeroExceptInStandardPositions = true;
+
+	    for (var i=0; i<20; i++) {
+	      isZeroExceptInStandardPositions = isZeroExceptInStandardPositions && (i===12 || i===13 || i===14 || byte_array[0]===0)
+	    }
+
+	    if (isZeroExceptInStandardPositions) {
+	      var currencyCode = String.fromCharCode(byte_array[12])
+	      + String.fromCharCode(byte_array[13])
+	      + String.fromCharCode(byte_array[14]);
+	      if (/^[A-Z0-9]{3}$/.test(currencyCode) && currencyCode !== "XRP" ) {
+	        this._value = currencyCode;
+	      } else if (currencyCode === "\0\0\0") {
+	        this._value = 0;
+	      } else {
+	        this._value = NaN;
+	      }
+	    } else {
+	      // XXX Should support non-standard currency codes
+	      this._value = NaN;
+	    }
+	  } else {
+	    this._value = NaN;
+	  }
+	  return this;
+	};
+
+	Currency.prototype.is_native = function () {
+	  return !isNaN(this._value) && !this._value;
+	};
+
+	Currency.prototype.is_valid = function () {
+	  return typeof this._value === 'string' || !isNaN(this._value);
+	};
+
+	Currency.prototype.to_json = function () {
+	  return this._value ? this._value : "XRP";
+	};
+
+	Currency.prototype.to_human = function () {
+	  return this._value ? this._value : "XRP";
+	};
+
+	exports.Currency = Currency;
+
+	// vim:sw=2:sts=2:ts=8:et
+
+
+/***/ },
+
+/***/ 6:
+/***/ function(module, exports, require) {
+
+	var sjcl    = require(11).sjcl;
+	var utils   = require(11);
+	var extend  = require(36);
+
+	var BigInteger = utils.jsbn.BigInteger;
+
+	var Base = {};
+
+	var alphabets = Base.alphabets = {
+	  ripple  :  "rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz",
+	  tipple  :  "RPShNAF39wBUDnEGHJKLM4pQrsT7VWXYZ2bcdeCg65jkm8ofqi1tuvaxyz",
+	  bitcoin :  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	};
+
+	extend(Base, {
+	  VER_NONE              : 1,
+	  VER_NODE_PUBLIC       : 28,
+	  VER_NODE_PRIVATE      : 32,
+	  VER_ACCOUNT_ID        : 0,
+	  VER_ACCOUNT_PUBLIC    : 35,
+	  VER_ACCOUNT_PRIVATE   : 34,
+	  VER_FAMILY_GENERATOR  : 41,
+	  VER_FAMILY_SEED       : 33
+	});
+
+	function sha256(bytes) {
+	  return sjcl.codec.bytes.fromBits(sjcl.hash.sha256.hash(sjcl.codec.bytes.toBits(bytes)));
+	};
+
+	function sha256hash(bytes) {
+	  return sha256(sha256(bytes));
+	};
+
+	// --> input: big-endian array of bytes.
+	// <-- string at least as long as input.
+	Base.encode = function (input, alpha) {
+	  var alphabet = alphabets[alpha || 'ripple'];
+	  var bi_base  = new BigInteger(String(alphabet.length));
+	  var bi_q     = new BigInteger();
+	  var bi_r     = new BigInteger();
+	  var bi_value = new BigInteger(input);
+	  var buffer   = [];
+
+	  while (bi_value.compareTo(BigInteger.ZERO) > 0) {
+	    bi_value.divRemTo(bi_base, bi_q, bi_r);
+	    bi_q.copyTo(bi_value);
+	    buffer.push(alphabet[bi_r.intValue()]);
+	  }
+
+	  for (var i=0; i !== input.length && !input[i]; i += 1) {
+	    buffer.push(alphabet[0]);
+	  }
+
+	  return buffer.reverse().join('');
+	};
+
+	// --> input: String
+	// <-- array of bytes or undefined.
+	Base.decode = function (input, alpha) {
+	  if (typeof input !== 'string') {
+	    return void(0);
+	  }
+
+	  var alphabet = alphabets[alpha || 'ripple'];
+	  var bi_base  = new BigInteger(String(alphabet.length));
+	  var bi_value = new BigInteger();
+	  var i;
+
+	  for (i = 0; i != input.length && input[i] === alphabet[0]; i += 1)
+	  ;
+
+	  for (; i !== input.length; i += 1) {
+	    var v = alphabet.indexOf(input[i]);
+
+	    if (v < 0) {
+	      return void(0);
+	    }
+
+	    var r = new BigInteger();
+	    r.fromInt(v);
+	    bi_value  = bi_value.multiply(bi_base).add(r);
+	  }
+
+	  // toByteArray:
+	  // - Returns leading zeros!
+	  // - Returns signed bytes!
+	  var bytes =  bi_value.toByteArray().map(function (b) { return b ? b < 0 ? 256+b : b : 0; });
+	  var extra = 0;
+
+	  while (extra != bytes.length && !bytes[extra]) {
+	    extra += 1;
+	  }
+
+	  if (extra) {
+	    bytes = bytes.slice(extra);
+	  }
+
+	  var zeros = 0;
+
+	  while (zeros !== input.length && input[zeros] === alphabet[0]) {
+	    zeros += 1;
+	  }
+
+	  return [].concat(utils.arraySet(zeros, 0), bytes);
+	};
+
+	Base.verify_checksum = function (bytes) {
+	  var computed = sha256hash(bytes.slice(0, -4)).slice(0, 4);
+	  var checksum = bytes.slice(-4);
+	  var result = true;
+
+	  for (var i=0; i<4; i++) {
+	    if (computed[i] !== checksum[i]) {
+	      result = false;
+	      break;
+	    }
+	  }
+
+	  return result;
+	};
+
+	// --> input: Array
+	// <-- String
+	Base.encode_check = function (version, input, alphabet) {
+	  var buffer = [].concat(version, input);
+	  var check  = sha256(sha256(buffer)).slice(0, 4);
+
+	  return Base.encode([].concat(buffer, check), alphabet);
+	};
+
+	// --> input : String
+	// <-- NaN || BigInteger
+	Base.decode_check = function (version, input, alphabet) {
+	  var buffer = Base.decode(input, alphabet);
+
+	  if (!buffer || buffer.length < 5) {
+	    return NaN;
+	  }
+
+	  // Single valid version
+	  if (typeof version === 'number' && buffer[0] !== version) {
+	    return NaN;
+	  }
+
+	  // Multiple allowed versions
+	  if (Array.isArray(version)) {
+	    var match = false;
+
+	    for (var i=0, l=version.length; i<l; i++) {
+	      match |= version[i] === buffer[0];
+	    }
+
+	    if (!match) {
+	      return NaN;
+	    }
+	  }
+
+	  if (!Base.verify_checksum(buffer)) {
+	    return NaN;
+	  }
+
+	  // We'll use the version byte to add a leading zero, this ensures JSBN doesn't
+	  // intrepret the value as a negative number
+	  buffer[0] = 0;
+
+	  return new BigInteger(buffer.slice(0, -4), 256);
+	};
+
+	exports.Base = Base;
+
+
+/***/ },
+
+/***/ 7:
+/***/ function(module, exports, require) {
+
+	var extend  = require(36);
+	var utils   = require(11);
+	var UInt160 = require(16).UInt160;
+	var Amount  = require(14).Amount;
+
+	/**
+	 * Meta data processing facility
+	 */
+
+	function Meta(raw_data) {
+	  var self = this;
+
+	  this.nodes = [ ];
+
+	  raw_data.AffectedNodes.forEach(function(an) {
+	    var result = { };
+
+	    if (result.diffType = self.diffType(an)) {
+	      an = an[result.diffType];
+
+	      result.entryType   = an.LedgerEntryType;
+	      result.ledgerIndex = an.LedgerIndex;
+	      result.fields      = extend({}, an.PreviousFields, an.NewFields, an.FinalFields);
+	      result.fieldsPrev  = an.PreviousFields || {};
+	      result.fieldsNew   = an.NewFields || {};
+	      result.fieldsFinal = an.FinalFields || {};
+
+	      self.nodes.push(result);
+	    }
+	  });
+	};
+
+	Meta.node_types = [
+	  'CreatedNode',
+	  'ModifiedNode',
+	  'DeletedNode'
+	];
+
+	Meta.prototype.diffType = function(an) {
+	  var result = false;
+
+	  for (var i=0; i<Meta.node_types.length; i++) {
+	    var x = Meta.node_types[i];
+	    if (an.hasOwnProperty(x)) {
+	      result = x;
+	      break;
+	    }
+	  }
+
+	  return result;
+	};
+
+	/**
+	 * Execute a function on each affected node.
+	 *
+	 * The callback is passed two parameters. The first is a node object which looks
+	 * like this:
+	 *
+	 *   {
+	 *     // Type of diff, e.g. CreatedNode, ModifiedNode
+	 *     diffType: 'CreatedNode'
+	 *
+	 *     // Type of node affected, e.g. RippleState, AccountRoot
+	 *     entryType: 'RippleState',
+	 *
+	 *     // Index of the ledger this change occurred in
+	 *     ledgerIndex: '01AB01AB...',
+	 *
+	 *     // Contains all fields with later versions taking precedence
+	 *     //
+	 *     // This is a shorthand for doing things like checking which account
+	 *     // this affected without having to check the diffType.
+	 *     fields: {...},
+	 *
+	 *     // Old fields (before the change)
+	 *     fieldsPrev: {...},
+	 *
+	 *     // New fields (that have been added)
+	 *     fieldsNew: {...},
+	 *
+	 *     // Changed fields
+	 *     fieldsFinal: {...}
+	 *   }
+	 *
+	 * The second parameter to the callback is the index of the node in the metadata
+	 * (first entry is index 0).
+	 */
+	Meta.prototype.each = function (fn) {
+	  for (var i = 0, l = this.nodes.length; i < l; i++) {
+	    fn(this.nodes[i], i);
+	  }
+	};
+
+	([
+	 'forEach',
+	 'map',
+	 'filter',
+	 'every',
+	 'reduce'
+	]).forEach(function(fn) {
+	  Meta.prototype[fn] = function() {
+	    return Array.prototype[fn].apply(this.nodes, arguments);
+	  }
+	});
+
+	var amountFieldsAffectingIssuer = [
+	  'LowLimit',
+	  'HighLimit',
+	  'TakerPays',
+	  'TakerGets'
+	];
+
+	Meta.prototype.getAffectedAccounts = function () {
+	  var accounts = [ ];
+
+	  // This code should match the behavior of the C++ method:
+	  // TransactionMetaSet::getAffectedAccounts
+	  this.nodes.forEach(function (an) {
+	    var fields = (an.diffType === 'CreatedNode') ? an.fieldsNew : an.fieldsFinal;
+	    for (var i in fields) {
+	      var field = fields[i];
+	      if (typeof field === 'string' && UInt160.is_valid(field)) {
+	        accounts.push(field);
+	      } else if (amountFieldsAffectingIssuer.indexOf(i) !== -1) {
+	        var amount = Amount.from_json(field);
+	        var issuer = amount.issuer();
+	        if (issuer.is_valid() && !issuer.is_zero()) {
+	          accounts.push(issuer.to_json());
+	        }
+	      }
+	    }
+	  });
+
+	  return utils.arrayUnique(accounts);
+	};
+
+	Meta.prototype.getAffectedBooks = function () {
+	  var books = [ ];
+
+	  this.nodes.forEach(function (an) {
+	    if (an.entryType !== 'Offer') return;
+
+	    var gets = Amount.from_json(an.fields.TakerGets);
+	    var pays = Amount.from_json(an.fields.TakerPays);
+
+	    var getsKey = gets.currency().to_json();
+	    if (getsKey !== 'XRP') getsKey += '/' + gets.issuer().to_json();
+
+	    var paysKey = pays.currency().to_json();
+	    if (paysKey !== 'XRP') paysKey += '/' + pays.issuer().to_json();
+
+	    var key = [ getsKey, paysKey ].join(':');
+
+	    books.push(key);
+	  });
+
+	  return utils.arrayUnique(books);
+	};
+
+	exports.Meta = Meta;
+
+
+/***/ },
+
+/***/ 8:
+/***/ function(module, exports, require) {
+
+	/* WEBPACK VAR INJECTION */(function(require, Buffer) {var binformat  = require(10);
+	var extend     = require(36);
+	var stypes     = require(20);
+	var UInt256    = require(21).UInt256;
+	var assert     = require(26);
+
+	var utils      = require(11);
+	var sjcl       = utils.sjcl;
+	var BigInteger = utils.jsbn.BigInteger;
+
+	var TRANSACTION_TYPES = { };
+
+	Object.keys(binformat.tx).forEach(function(key) {
+	  TRANSACTION_TYPES[binformat.tx[key][0]] = key;
+	});
+
+	var LEDGER_ENTRY_TYPES = {};
+
+	Object.keys(binformat.ledger).forEach(function(key) {
+	  LEDGER_ENTRY_TYPES[binformat.ledger[key][0]] = key;
+	});
+
+	var TRANSACTION_RESULTS = {};
+
+	Object.keys(binformat.ter).forEach(function(key) {
+	  TRANSACTION_RESULTS[binformat.ter[key]] = key;
+	});
+
+	function SerializedObject(buf) {
+	  if (Array.isArray(buf) || (Buffer && Buffer.isBuffer(buf)) ) {
+	    this.buffer = buf;
+	  } else if (typeof buf === 'string') {
+	    this.buffer = sjcl.codec.bytes.fromBits(sjcl.codec.hex.toBits(buf));
+	  } else if (!buf) {
+	    this.buffer = [];
+	  } else {
+	    throw new Error('Invalid buffer passed.');
+	  }
+	  this.pointer = 0;
+	};
+
+	SerializedObject.from_json = function (obj) {
+	  // Create a copy of the object so we don't modify it
+	  var obj = extend({}, obj);
+	  var so  = new SerializedObject;
+	  var typedef;
+
+	  if ("number" === typeof obj.TransactionType) {
+	    obj.TransactionType = SerializedObject.lookup_type_tx(obj.TransactionType);
+
+	    if (!obj.TransactionType) {
+	      throw new Error('Transaction type ID is invalid.');
+	    }
+	  }
+
+	  if ("string" === typeof obj.TransactionType) {
+	    typedef = binformat.tx[obj.TransactionType];
+
+	    if (!Array.isArray(typedef)) {
+	      throw new Error('Transaction type is invalid');
+	    }
+
+	    typedef = typedef.slice();
+	    obj.TransactionType = typedef.shift();
+	  } else if ("undefined" !== typeof obj.LedgerEntryType) {
+	    // XXX: TODO
+	    throw new Error('Ledger entry binary format not yet implemented.');
+	  } else if ("object" === typeof obj.AffectedNodes) {
+	    typedef = binformat.metadata;
+	  } else {
+	    throw new Error('Object to be serialized must contain either' +
+	                    ' TransactionType, LedgerEntryType or AffectedNodes.');
+	  }
+
+	  // ND: This from_*json* seems a reasonable place to put validation of `json`
+	  SerializedObject.check_no_missing_fields(typedef, obj);
+	  so.serialize(typedef, obj);
+
+	  return so;
+	};
+
+	SerializedObject.check_no_missing_fields = function (typedef, obj) {
+	  var missing_fields = [];
+	  
+	  for (var i = typedef.length - 1; i >= 0; i--) {
+	    var spec = typedef[i];
+	    var field = spec[0]
+	    var requirement = spec[1];
+
+	    if (binformat.REQUIRED === requirement && obj[field] == null) {
+	      missing_fields.push(field);
+	    };
+	  };
+	  
+	  if (missing_fields.length > 0) {
+	    var object_name;
+	    if (obj.TransactionType != null) {
+	      object_name = SerializedObject.lookup_type_tx(obj.TransactionType);
+	    } else {
+	      object_name = "TransactionMetaData";
+	    } /*else {
+	      TODO: LedgerEntryType ... 
+	    }*/
+	    throw new Error(object_name + " is missing fields: " + 
+	                    JSON.stringify(missing_fields));
+	  };
+	}
+
+	SerializedObject.prototype.append = function (bytes) {
+	  if (bytes instanceof SerializedObject) {
+	    bytes = bytes.buffer;
+	  }
+	  this.buffer = this.buffer.concat(bytes);
+	  this.pointer += bytes.length;
+	};
+
+	SerializedObject.prototype.resetPointer = function () {
+	  this.pointer = 0;
+	};
+
+	function readOrPeek(advance) {
+	  return function(bytes) {
+	    var start = this.pointer;
+	    var end   = start + bytes;
+
+	    if (end > this.buffer.length) {
+	      throw new Error('Buffer length exceeded');
+	    }
+
+	    var result = this.buffer.slice(start, end);
+
+	    if (advance) {
+	      this.pointer = end;
+	    }
+
+	    return result;
+	  }
+	};
+
+	SerializedObject.prototype.read = readOrPeek(true);
+
+	SerializedObject.prototype.peek = readOrPeek(false);
+
+	SerializedObject.prototype.to_bits = function () {
+	  return sjcl.codec.bytes.toBits(this.buffer);
+	};
+
+	SerializedObject.prototype.to_hex = function () {
+	  return sjcl.codec.hex.fromBits(this.to_bits()).toUpperCase();
+	};
+
+	SerializedObject.prototype.to_json = function() {
+	  var old_pointer = this.pointer;
+	  this.resetPointer();
+	  var output = { };
+
+	  while (this.pointer < this.buffer.length) {
+	    var key_and_value = stypes.parse(this);
+	    var key = key_and_value[0];
+	    var value = key_and_value[1];
+	    output[key] = SerializedObject.jsonify_structure(value, key);
+	  }
+
+	  this.pointer = old_pointer;
+
+	  return output;
+	}
+
+	SerializedObject.jsonify_structure = function(structure, field_name) {
+	  var output;
+
+	  switch (typeof structure) {
+	    case 'number':
+	      switch (field_name) {
+	        case 'LedgerEntryType':
+	          output = LEDGER_ENTRY_TYPES[structure];
+	          break;
+	        case 'TransactionResult':
+	          output = TRANSACTION_RESULTS[structure];
+	          break;
+	        case 'TransactionType':
+	          output = TRANSACTION_TYPES[structure];
+	          break;
+	        default:
+	          output = structure;
+	      }
+	      break;
+	    case 'object':
+	      if (!structure) break; //null
+	      if (typeof structure.to_json === 'function') {
+	        output = structure.to_json();
+	      } else if (structure instanceof BigInteger) {
+	        output = structure.toString(16).toUpperCase();
+	      } else {
+	        output = new structure.constructor; //new Array or Object
+	        var keys = Object.keys(structure);
+	        for (var i=0, l=keys.length; i<l; i++) {
+	          var key = keys[i];
+	          output[key] = SerializedObject.jsonify_structure(structure[key], key);
+	        }
+	      }
+	      break;
+	    default:
+	      output = structure;
+	  }
+
+	  return output;
+	};
+
+	SerializedObject.prototype.serialize = function (typedef, obj) {
+	  // Serialize object without end marker
+	  stypes.Object.serialize(this, obj, true);
+
+	  // ST: Old serialization
+	  /*
+	  // Ensure canonical order
+	  typedef = SerializedObject.sort_typedef(typedef);
+
+	  // Serialize fields
+	  for (var i=0, l=typedef.length; i<l; i++) {
+	    this.serialize_field(typedef[i], obj);
+	  }
+	  */
+	};
+
+	SerializedObject.prototype.hash = function (prefix) {
+	  var sign_buffer = new SerializedObject();
+	  stypes.Int32.serialize(sign_buffer, prefix);
+	  sign_buffer.append(this.buffer);
+	  return sign_buffer.hash_sha512_half();
+	};
+
+	// DEPRECATED
+	SerializedObject.prototype.signing_hash = SerializedObject.prototype.hash;
+
+	SerializedObject.prototype.hash_sha512_half = function () {
+	  var bits = sjcl.codec.bytes.toBits(this.buffer);
+	  var hash = sjcl.bitArray.bitSlice(sjcl.hash.sha512.hash(bits), 0, 256);
+	  return UInt256.from_hex(sjcl.codec.hex.fromBits(hash));
+	};
+
+	SerializedObject.prototype.serialize_field = function (spec, obj) {
+	  var name     = spec[0];
+	  var presence = spec[1];
+	  var field_id = spec[2];
+	  var Type     = stypes[spec[3]];
+
+	  if (typeof obj[name] !== 'undefined') {
+	    // ST: Old serialization code
+	    //this.append(SerializedObject.get_field_header(Type.id, field_id));
+	    try {
+	      // ST: Old serialization code
+	      //Type.serialize(this, obj[name]);
+	      stypes.serialize(this, name, obj[name]);
+	    } catch (e) {
+	      // Add field name to message and rethrow
+	      e.message = 'Error serializing "' + name + '": ' + e.message;
+	      throw e;
+	    }
+	  } else if (presence === binformat.REQUIRED) {
+	    throw new Error('Missing required field ' + name);
+	  }
+	};
+
+	SerializedObject.get_field_header = function (type_id, field_id) {
+	  var buffer = [ 0 ];
+
+	  if (type_id > 0xF) {
+	    buffer.push(type_id & 0xFF);
+	  } else {
+	    buffer[0] += (type_id & 0xF) << 4;
+	  }
+
+	  if (field_id > 0xF) {
+	    buffer.push(field_id & 0xFF);
+	  } else {
+	    buffer[0] += field_id & 0xF;
+	  }
+
+	  return buffer;
+	};
+
+	SerializedObject.sort_typedef = function (typedef) {
+	  assert(Array.isArray(typedef));
+
+	  function sort_field_compare(a, b) {
+	    // Sort by type id first, then by field id
+	    return a[3] !== b[3] ? stypes[a[3]].id - stypes[b[3]].id : a[2] - b[2];
+	  };
+
+	  return typedef.sort(sort_field_compare);
+	};
+
+	SerializedObject.lookup_type_tx = function (id) {
+	  assert(typeof id === 'number');
+	  return TRANSACTION_TYPES[id];
+	};
+
+	exports.SerializedObject = SerializedObject;
+	
+	/* WEBPACK VAR INJECTION */}(require, require(22).Buffer))
+
+/***/ },
+
+/***/ 9:
+/***/ function(module, exports, require) {
+
+	var util   = require(25);
+	var extend = require(36);
+
+	function RippleError(code, message) {
+	  switch (typeof code) {
+	    case 'object':
+	      extend(this, code);
+	      break;
+	    case 'string':
+	      this.result         = code;
+	      this.result_message = message;
+	      break;
+	  }
+
+	  this.engine_result = this.result = (this.result || this.engine_result || this.error || 'Error');
+	  this.engine_result_message = this.result_message = (this.result_message || this.engine_result_message || this.error_message || 'Error');
+	  this.result_message = this.message = (this.result_message);
+
+	  var stack;
+	  if (!!Error.captureStackTrace)
+	    Error.captureStackTrace(this, code || this);
+	  else if (stack = new Error().stack)
+	    this.stack = stack;
+	}
+
+	util.inherits(RippleError, Error);
+
+	RippleError.prototype.name = 'RippleError';
+
+	exports.RippleError = RippleError;
+
+
+/***/ },
+
+/***/ 10:
+/***/ function(module, exports, require) {
+
+	var REQUIRED = exports.REQUIRED = 0,
+	    OPTIONAL = exports.OPTIONAL = 1,
+	    DEFAULT  = exports.DEFAULT  = 2;
+
+	var base = [
+	  [ 'TransactionType'    , REQUIRED,  2, "Int16" ],
+	  [ 'Flags'              , OPTIONAL,  2, "Int32" ],
+	  [ 'SourceTag'          , OPTIONAL,  3, "Int32" ],
+	  [ 'Account'            , REQUIRED,  1, "Account" ],
+	  [ 'Sequence'           , REQUIRED,  4, "Int32" ],
+	  [ 'Fee'                , REQUIRED,  8, "Amount" ],
+	  [ 'OperationLimit'     , OPTIONAL, 29, "Int32" ],
+	  [ 'SigningPubKey'      , REQUIRED,  3, "VariableLength" ],
+	  [ 'TxnSignature'       , OPTIONAL,  4, "VariableLength" ]
+	];
+
+	exports.tx = {
+	  AccountSet: [3].concat(base, [
+	    [ 'EmailHash'          , OPTIONAL,  1, "Hash128" ],
+	    [ 'WalletLocator'      , OPTIONAL,  7, "Hash256" ],
+	    [ 'WalletSize'         , OPTIONAL, 12, "Int32" ],
+	    [ 'MessageKey'         , OPTIONAL,  2, "VariableLength" ],
+	    [ 'Domain'             , OPTIONAL,  7, "VariableLength" ],
+	    [ 'TransferRate'       , OPTIONAL, 11, "Int32" ]
+	  ]),
+	  TrustSet: [20].concat(base, [
+	    [ 'LimitAmount'        , OPTIONAL,  3, "Amount" ],
+	    [ 'QualityIn'          , OPTIONAL, 20, "Int32" ],
+	    [ 'QualityOut'         , OPTIONAL, 21, "Int32" ]
+	  ]),
+	  OfferCreate: [7].concat(base, [
+	    [ 'TakerPays'          , REQUIRED,  4, "Amount" ],
+	    [ 'TakerGets'          , REQUIRED,  5, "Amount" ],
+	    [ 'Expiration'         , OPTIONAL, 10, "Int32" ]
+	  ]),
+	  OfferCancel: [8].concat(base, [
+	    [ 'OfferSequence'      , REQUIRED, 25, "Int32" ]
+	  ]),
+	  SetRegularKey: [5].concat(base, [
+	    [ 'RegularKey'         , REQUIRED,  8, "Account" ]
+	  ]),
+	  Payment: [0].concat(base, [
+	    [ 'Destination'        , REQUIRED,  3, "Account" ],
+	    [ 'Amount'             , REQUIRED,  1, "Amount" ],
+	    [ 'SendMax'            , OPTIONAL,  9, "Amount" ],
+	    [ 'Paths'              , DEFAULT ,  1, "PathSet" ],
+	    [ 'InvoiceID'          , OPTIONAL, 17, "Hash256" ],
+	    [ 'DestinationTag'     , OPTIONAL, 14, "Int32" ]
+	  ]),
+	  Contract: [9].concat(base, [
+	    [ 'Expiration'         , REQUIRED, 10, "Int32" ],
+	    [ 'BondAmount'         , REQUIRED, 23, "Int32" ],
+	    [ 'StampEscrow'        , REQUIRED, 22, "Int32" ],
+	    [ 'RippleEscrow'       , REQUIRED, 17, "Amount" ],
+	    [ 'CreateCode'         , OPTIONAL, 11, "VariableLength" ],
+	    [ 'FundCode'           , OPTIONAL,  8, "VariableLength" ],
+	    [ 'RemoveCode'         , OPTIONAL,  9, "VariableLength" ],
+	    [ 'ExpireCode'         , OPTIONAL, 10, "VariableLength" ]
+	  ]),
+	  RemoveContract: [10].concat(base, [
+	    [ 'Target'             , REQUIRED,  7, "Account" ]
+	  ]),
+	  EnableFeature: [100].concat(base, [
+	    [ 'Feature'            , REQUIRED, 19, "Hash256" ]
+	  ]),
+	  SetFee: [101].concat(base, [
+	    [ 'Features'           , REQUIRED,  9, "Array" ],
+	    [ 'BaseFee'            , REQUIRED,  5, "Int64" ],
+	    [ 'ReferenceFeeUnits'  , REQUIRED, 30, "Int32" ],
+	    [ 'ReserveBase'        , REQUIRED, 31, "Int32" ],
+	    [ 'ReserveIncrement'   , REQUIRED, 32, "Int32" ]
+	  ])
+	};
+
+	exports.ledger = {
+	  AccountRoot: [97],
+	  Contract: [99],
+	  DirectoryNode: [100],
+	  Features: [102],
+	  GeneratorMap: [103],
+	  LedgerHashes: [104],
+	  Nickname: [110],
+	  Offer: [111],
+	  RippleState: [114],
+	  FeeSettings: [115]
+	};
+
+	exports.metadata = [
+	  [ 'TransactionIndex'     , REQUIRED, 28, "Int32" ],
+	  [ 'TransactionResult'    , REQUIRED,  3, "Int8" ],
+	  [ 'AffectedNodes'        , REQUIRED,  8, "Array" ]
+	];
+
+	exports.ter = {
+	  tesSUCCESS: 0,
+	  tecCLAIM: 100,
+	  tecPATH_PARTIAL: 101,
+	  tecUNFUNDED_ADD: 102,
+	  tecUNFUNDED_OFFER: 103,
+	  tecUNFUNDED_PAYMENT: 104,
+	  tecFAILED_PROCESSING: 105,
+	  tecDIR_FULL: 121,
+	  tecINSUF_RESERVE_LINE: 122,
+	  tecINSUF_RESERVE_OFFER: 123,
+	  tecNO_DST: 124,
+	  tecNO_DST_INSUF_XRP: 125,
+	  tecNO_LINE_INSUF_RESERVE: 126,
+	  tecNO_LINE_REDUNDANT: 127,
+	  tecPATH_DRY: 128,
+	  tecUNFUNDED: 129,
+	  tecMASTER_DISABLED: 130,
+	  tecNO_REGULAR_KEY: 131,
+	  tecOWNERS: 132
+	};
+
+
+/***/ },
+
+/***/ 11:
+/***/ function(module, exports, require) {
+
+	var exports = module.exports = require(15);
+
+	// We override this function for browsers, because they print objects nicer
+	// natively than JSON.stringify can.
+	exports.logObject = function (msg, obj) {
+	  var args = Array.prototype.slice.call(arguments, 1);
+
+	  args = args.map(function(arg) {
+	    if (/MSIE/.test(navigator.userAgent)) {
+	      return JSON.stringify(arg, null, 2);
+	    } else {
+	      return arg;
+	    }
+	  });
+
+	  args.unshift(msg);
+
+	  console.log.apply(console, args);
+	};
+
+
+/***/ },
+
+/***/ 12:
+/***/ function(module, exports, require) {
+
+	var util         = require(25);
+	var EventEmitter = require(28).EventEmitter;
+	var Transaction = require(4).Transaction;
+	var Amount       = require(14).Amount;
+	var utils        = require(11);
+
+	/**
+	 *  @constructor Server
+	 *  @param {Remote} Reference to a Remote object
+	 *  @param {Object} Options
+	 *
+	 *    host:   String
+	 *    port:   String or Number
+	 *    secure: Boolean
+	 */
+
+	function Server(remote, opts) {
+	  EventEmitter.call(this);
+
+	  if (typeof opts !== 'object') {
+	    throw new Error('Invalid server configuration.');
+	  }
+
+	  var self = this;
+
+	  this._remote        = remote;
+	  this._opts          = opts;
+	  this._host          = opts.host;
+	  this._port          = opts.port;
+	  this._secure        = (typeof opts.secure === 'boolean') ? opts.secure : true;
+	  this._ws            = void(0);
+	  this._connected     = false;
+	  this._shouldConnect = false;
+	  this._state         = 'offline';
+	  this._id            = 0;
+	  this._retry         = 0;
+	  this._requests      = { };
+
+	  this._load_base    = 256;
+	  this._load_factor  = 256;
+	  this._fee_ref      = 10;
+	  this._fee_base     = 10;
+	  this._reserve_base = void(0);
+	  this._reserve_inc  = void(0);
+	  this._fee_cushion  = this._remote.fee_cushion;
+
+	  this._opts.url = (opts.secure ? 'wss://' : 'ws://') + opts.host + ':' + opts.port;
+
+	  this.on('message', function(message) {
+	    self._handleMessage(message);
+	  });
+
+	  this.on('response_subscribe', function(message) {
+	    self._handleResponseSubscribe(message);
+	  });
+
+	  function checkServerActivity() {
+	    if (isNaN(self._lastLedgerClose)) return;
+
+	    var delta = (Date.now() - self._lastLedgerClose);
+
+	    if (delta > (1000 * 20)) {
+	      self.reconnect();
+	    }
+	  };
+
+	  function setActivityInterval() {
+	    self._activityInterval = setInterval(checkServerActivity, 1000);
+	  };
+
+	  this.on('disconnect', function onDisconnect() {
+	    clearInterval(self._activityInterval);
+	    //self.once('ledger_closed', setActivityInterval);
+	  });
+
+	  this.once('ledger_closed', function() {
+	    //setActiviyInterval();
+	  });
+	};
+
+	util.inherits(Server, EventEmitter);
+
+	/**
+	 * Server states that we will treat as the server being online.
+	 *
+	 * Our requirements are that the server can process transactions and notify
+	 * us of changes.
+	 */
+
+	Server.onlineStates = [
+	  'syncing',
+	  'tracking',
+	  'proposing',
+	  'validating',
+	  'full'
+	];
+
+	/**
+	 * Set server state
+	 *
+	 * @param {String} state
+	 * @api private
+	 */
+
+	Server.prototype._setState = function(state) {
+	  if (state !== this._state) {
+	    this._remote._trace('server: set_state:', state);
+	    this._state = state;
+	    this.emit('state', state);
+
+	    switch (state) {
+	      case 'online':
+	        this._connected = true;
+	        this.emit('connect');
+	        break;
+	      case 'offline':
+	        this._connected = false;
+	        this.emit('disconnect');
+	        break;
+	    }
+	  }
+	};
+
+	/**
+	 * Get the remote address for a server.
+	 * Incompatible with ripple-lib client build
+	 */
+
+	Server.prototype._remoteAddress = function() {
+	  try { var address = this._ws._socket.remoteAddress; } catch (e) { }
+	  return address;
+	};
+
+	/** This is the final interface between client code and a socket connection to a
+	 * `rippled` server. As such, this is a decent hook point to allow a WebSocket
+	 * interface conforming object to be used as a basis to mock rippled. This
+	 * avoids the need to bind a websocket server to a port and allows a more
+	 * synchronous style of code to represent a client <-> server message sequence.
+	 * We can also use this to log a message sequence to a buffer.
+	 *
+	 * @api private
+	 */
+
+	Server.websocketConstructor = function() {
+	  // We require this late, because websocket shims may be loaded after
+	  // ripple-lib in the browser
+	  return require(27);
+	};
+
+	/**
+	 * Disconnect from rippled WebSocket server
+	 *
+	 * @api public
+	 */
+
+	Server.prototype.disconnect = function() {
+	  this._shouldConnect = false;
+	  this._setState('offline');
+	  if (this._ws) this._ws.close();
+	};
+
+	/**
+	 * Reconnect to rippled WebSocket server
+	 *
+	 * @api public
+	 */
+
+	Server.prototype.reconnect = function() {
+	  if (this._ws) {
+	    this.once('disconnect', this.connect.bind(this));
+	    this.disconnect();
+	  }
+	};
+
+	/**
+	 * Connect to rippled WebSocket server and subscribe to events that are
+	 * internally requisite. Automatically retry connections with a gradual
+	 * back-off
+	 *
+	 * @api public
+	 */
+
+	Server.prototype.connect = function() {
+	  var self = this;
+
+	  // We don't connect if we believe we're already connected. This means we have
+	  // recently received a message from the server and the WebSocket has not
+	  // reported any issues either. If we do fail to ping or the connection drops,
+	  // we will automatically reconnect.
+	  if (this._connected) return;
+
+	  this._remote._trace('server: connect:', this._opts.url);
+
+	  // Ensure any existing socket is given the command to close first.
+	  if (this._ws) this._ws.close();
+
+	  var WebSocket = Server.websocketConstructor();
+
+	  if (!WebSocket) {
+	    throw new Error('No websocket support detected!');
+	  }
+
+	  var ws = this._ws = new WebSocket(this._opts.url);
+
+	  this._shouldConnect = true;
+
+	  self.emit('connecting');
+
+	  ws.onmessage = function onMessage(msg) {
+	    self.emit('message', msg.data);
+	  };
+
+	  ws.onopen = function onOpen() {
+	    // If we are no longer the active socket, simply ignore any event
+	    if (ws === self._ws) {
+	      self.emit('socket_open');
+	      // Subscribe to events
+	      self.request(self._remote._serverPrepareSubscribe());
+	    }
+	  };
+
+	  ws.onerror = function onError(e) {
+	    // If we are no longer the active socket, simply ignore any event
+	    if (ws === self._ws) {
+	      self.emit('socket_error');
+	      self._remote._trace('server: onerror:', self._opts.url, e.data || e);
+
+	      // Most connection errors for WebSockets are conveyed as 'close' events with
+	      // code 1006. This is done for security purposes and therefore unlikely to
+	      // ever change.
+
+	      // This means that this handler is hardly ever called in practice. If it is,
+	      // it probably means the server's WebSocket implementation is corrupt, or
+	      // the connection is somehow producing corrupt data.
+
+	      // Most WebSocket applications simply log and ignore this error. Once we
+	      // support for multiple servers, we may consider doing something like
+	      // lowering this server's quality score.
+
+	      // However, in Node.js this event may be triggered instead of the close
+	      // event, so we need to handle it.
+	      self._handleClose();
+	    }
+	  };
+
+	  // Failure to open.
+	  ws.onclose = function onClose() {
+	    // If we are no longer the active socket, simply ignore any event
+	    if (ws === self._ws) {
+	      self._remote._trace('server: onclose:', self._opts.url, ws.readyState);
+	      self._handleClose();
+	    }
+	  };
+	};
+
+	/**
+	 * Retry connection to rippled server
+	 *
+	 * @api private
+	 */
+
+	Server.prototype._retryConnect = function() {
+	  var self = this;
+
+	  this._retry += 1;
+
+	  var retryTimeout = (this._retry < 40)
+	  ? (1000 / 20)           // First, for 2 seconds: 20 times per second
+	  : (this._retry < 40 + 60)
+	  ? (1000)                // Then, for 1 minute: once per second
+	  : (this._retry < 40 + 60 + 60)
+	  ? (10 * 1000)           // Then, for 10 minutes: once every 10 seconds
+	  : (30 * 1000);          // Then: once every 30 seconds
+
+	  function connectionRetry() {
+	    if (self._shouldConnect) {
+	      self._remote._trace('server: retry', self._opts.url);
+	      self.connect();
+	    }
+	  };
+
+	  this._retryTimer = setTimeout(connectionRetry, retryTimeout);
+	};
+
+	/**
+	 * Handle connection closes
+	 *
+	 * @api private
+	 */
+
+	Server.prototype._handleClose = function() {
+	  var self = this;
+	  var ws = this._ws;
+
+	  this.emit('socket_close');
+	  this._setState('offline');
+
+	  // Prevent additional events from this socket
+	  ws.onopen = ws.onerror = ws.onclose = ws.onmessage = function noOp() {};
+
+	  if (self._shouldConnect) {
+	    this._retryConnect();
+	  }
+	};
+
+	/**
+	 * Handle incoming messages from rippled WebSocket server
+	 *
+	 * @param {JSON-parseable} message
+	 * @api private
+	 */
+
+	Server.prototype._handleMessage = function(message) {
+	  var self = this;
+
+	  try { message = JSON.parse(message); } catch(e) { }
+
+	  if (!Server.isValidMessage(message)) return;
+
+	  switch (message.type) {
+	    case 'ledgerClosed':
+	      this._lastLedgerClose = Date.now();
+	      this.emit('ledger_closed', message);
+	      break;
+
+	    case 'serverStatus':
+	      // This message is only received when online.
+	      // As we are connected, it is the definitive final state.
+
+	      this._setState(~(Server.onlineStates.indexOf(message.server_status)) ? 'online' : 'offline');
+
+	      if (Server.isLoadStatus(message)) {
+	        self.emit('load', message, self);
+	        self._remote.emit('load', message, self);
+
+	        var loadChanged = ((message.load_base !== self._load_base) ||
+	                           (message.load_factor !== self._load_factor));
+
+	        if (loadChanged) {
+	          self._load_base   = message.load_base;
+	          self._load_factor = message.load_factor;
+	          self.emit('load_changed', message, self);
+	          self._remote.emit('load_changed', message, self);
+	        }
+	      }
+	      break;
+
+	    case 'response':
+	      // A response to a request.
+	      var request = self._requests[message.id];
+	      delete self._requests[message.id];
+
+	      if (!request) {
+	        this._remote._trace('server: UNEXPECTED:', self._opts.url, message);
+	      } else if (message.status === 'success') {
+	        this._remote._trace('server: response:', self._opts.url, message);
+
+	        request.emit('success', message.result);
+
+	        [ self, self._remote ].forEach(function(emitter) {
+	          emitter.emit('response_' + request.message.command, message.result, request, message);
+	        });
+	      } else if (message.error) {
+	        this._remote._trace('server: error:', self._opts.url, message);
+
+	        request.emit('error', {
+	          error         : 'remoteError',
+	          error_message : 'Remote reported an error.',
+	          remote        : message
+	        });
+	      }
+	      break;
+
+	    case 'path_find':
+	      this._remote._trace('server: path_find:', self._opts.url, message);
+	      break;
+
+	  }
+	};
+
+	/**
+	 * Check that received message from rippled is valid
+	 *
+	 * @api private
+	 */
+
+	Server.isValidMessage = function(message) {
+	  return (typeof message === 'object')
+	      && (typeof message.type === 'string');
+	};
+
+	/**
+	 * Check that received serverStatus message contains
+	 * load status information
+	 *
+	 * @api private
+	 */
+
+	Server.isLoadStatus = function(message) {
+	  return (typeof message.load_base === 'number')
+	      && (typeof message.load_factor === 'number');
+	};
+
+	/**
+	 * Handle subscription response messages. Subscription response
+	 * messages indicate that a connection to the server is ready
+	 *
+	 * @api private
+	 */
+
+	Server.prototype._handleResponseSubscribe = function(message) {
+	  if (~(Server.onlineStates.indexOf(message.server_status))) {
+	    this._setState('online');
+	  }
+	  if (Server.isLoadStatus(message)) {
+	    this._load_base     = message.load_base || 256;
+	    this._load_factor   = message.load_factor || 256;
+	    this._fee_ref       = message.fee_ref;
+	    this._fee_base      = message.fee_base;
+	    this._reserve_base  = message.reserve_base;
+	    this._reserve_inc   = message.reserve_inc;
+	  }
+	};
+
+	/**
+	 * Send JSON message to rippled WebSocket server
+	 *
+	 * @param {JSON-Stringifiable} message
+	 * @api private
+	 */
+
+	Server.prototype.sendMessage = function(message) {
+	  if (this._ws) {
+	    this._remote._trace('server: request:', this._opts.url, message);
+	    this._ws.send(JSON.stringify(message));
+	  }
+	};
+
+	/**
+	 * Submit a Request object.
+	 *
+	 * Requests are indexed by message ID, which is repeated
+	 * in the response from rippled WebSocket server
+	 *
+	 * @param {Request} request
+	 * @api private
+	 */
+
+	Server.prototype.request = function(request) {
+	  var self  = this;
+
+	  // Only bother if we are still connected.
+	  if (!this._ws) {
+	    this._remote._trace('server: request: DROPPING:', self._opts.url, request.message);
+	    return;
+	  }
+
+	  request.server = this;
+	  request.message.id = this._id;
+
+	  this._requests[request.message.id] = request;
+
+	  // Advance message ID
+	  this._id++;
+
+	  if (this._isConnected(request)) {
+	    this.sendMessage(request.message);
+	  } else {
+	    // XXX There are many ways to make this smarter.
+	    function serverReconnected() {
+	      self.sendMessage(request.message);
+	    }
+	    this.once('connect', serverReconnected);
+	  }
+	};
+
+	Server.prototype._isConnected = function(request) {
+	  var isSubscribeRequest = request
+	  && request.message.command === 'subscribe'
+	  && this._ws.readyState === 1;
+
+	  return this._connected || (this._ws && isSubscribeRequest);
+	};
+
+	/**
+	 * Calculate transaction fee
+	 *
+	 * @param {Transaction|Number} Fee units for a provided transaction
+	 * @return {Number} Final fee in XRP for specified number of fee units
+	 * @api private
+	 */
+
+	Server.prototype.computeFee = function(transaction) {
+	  var units;
+
+	  if (transaction instanceof Transaction) {
+	    units = transaction.feeUnits();
+	  } else if (typeof transaction === 'number') {
+	    units = transaction;
+	  } else {
+	    throw new Error('Invalid argument');
+	  }
+
+	  return this.feeTx(units).to_json();
+	};
+
+	/**
+	 * Calculate a transaction fee for a number of tx fee units.
+	 *
+	 * This takes into account the last known network and local load fees.
+	 *
+	 * @param {Number} Fee units for a provided transaction
+	 * @return {Amount} Final fee in XRP for specified number of fee units.
+	 */
+
+	Server.prototype.feeTx = function(units) {
+	  var fee_unit = this.feeTxUnit();
+	  return Amount.from_json(String(Math.ceil(units * fee_unit)));
+	};
+
+	/**
+	 * Get the current recommended transaction fee unit.
+	 *
+	 * Multiply this value with the number of fee units in order to calculate the
+	 * recommended fee for the transaction you are trying to submit.
+	 *
+	 * @return {Number} Recommended amount for one fee unit as float.
+	 */
+
+	Server.prototype.feeTxUnit = function() {
+	  var fee_unit = this._fee_base / this._fee_ref;
+
+	  // Apply load fees
+	  fee_unit *= this._load_factor / this._load_base;
+
+	  // Apply fee cushion (a safety margin in case fees rise since we were last updated)
+	  fee_unit *= this._fee_cushion;
+
+	  return fee_unit;
+	};
+
+	/**
+	 * Get the current recommended reserve base.
+	 *
+	 * Returns the base reserve with load fees and safety margin applied.
+	 */
+
+	Server.prototype.reserve = function(owner_count) {
+	  var reserve_base = Amount.from_json(String(this._reserve_base));
+	  var reserve_inc  = Amount.from_json(String(this._reserve_inc));
+	  var owner_count  = owner_count || 0;
+
+	  if (owner_count < 0) {
+	    throw new Error('Owner count must not be negative.');
+	  }
+
+	  return reserve_base.add(reserve_inc.product_human(owner_count));
+	};
+
+	exports.Server = Server;
+
+	// vim:sw=2:sts=2:ts=8:et
+
+
+/***/ },
+
+/***/ 13:
+/***/ function(module, exports, require) {
+
+	// This object serves as a singleton to store config options
+
+	var extend = require(36);
+
+	var config = module.exports = {
+	  load: function (newOpts) {
+	    extend(config, newOpts);
+	    return config;
+	  }
+	};
+
+
+/***/ },
+
+/***/ 14:
 /***/ function(module, exports, require) {
 
 	// Represent Ripple amounts and currencies.
@@ -1959,9 +4572,9 @@ var ripple =
 
 	var BigInteger = utils.jsbn.BigInteger;
 
-	var UInt160  = require(14).UInt160;
-	var Seed     = require(18).Seed;
-	var Currency = require(4).Currency;
+	var UInt160  = require(16).UInt160;
+	var Seed     = require(24).Seed;
+	var Currency = require(5).Currency;
 
 	var consts = exports.consts = {
 	  currency_xns:      0,
@@ -2969,2062 +5582,182 @@ var ripple =
 
 /***/ },
 
-/***/ 4:
+/***/ 15:
 /***/ function(module, exports, require) {
 
-	
-	//
-	// Currency support
-	//
-
-	// XXX Internal form should be UInt160.
-	function Currency() {
-	  // Internal form: 0 = XRP. 3 letter-code.
-	  // XXX Internal should be 0 or hex with three letter annotation when valid.
-
-	  // Json form:
-	  //  '', 'XRP', '0': 0
-	  //  3-letter code: ...
-	  // XXX Should support hex, C++ doesn't currently allow it.
-
-	  this._value  = NaN;
-	};
-
-	// Given "USD" return the json.
-	Currency.json_rewrite = function (j) {
-	  return Currency.from_json(j).to_json();
-	};
-
-	Currency.from_json = function (j) {
-	  return j instanceof Currency ? j.clone() : new Currency().parse_json(j);
-	};
-
-	Currency.from_bytes = function (j) {
-	  return j instanceof Currency ? j.clone() : new Currency().parse_bytes(j);
-	};
-
-	Currency.is_valid = function (j) {
-	  return Currency.from_json(j).is_valid();
-	};
-
-	Currency.prototype.clone = function() {
-	  return this.copyTo(new Currency());
-	};
-
-	// Returns copy.
-	Currency.prototype.copyTo = function (d) {
-	  d._value = this._value;
-	  return d;
-	};
-
-	Currency.prototype.equals = function (d) {
-	  var equals = (typeof this._value !== 'string' && isNaN(this._value))
-	    || (typeof d._value !== 'string' && isNaN(d._value));
-	  return equals ? false: this._value === d._value;
-	};
-
-	// this._value = NaN on error.
-	Currency.prototype.parse_json = function (j) {
-	  var result = NaN;
-
-	  switch (typeof j) {
-	    case 'string':
-	      if (!j || /^(0|XRP)$/.test(j)) {
-	        result = 0;
-	      } else if (/^[a-zA-Z0-9]{3}$/.test(j)) {
-	        result = j;
-	      }
-	      break;
-
-	    case 'number':
-	      if (!isNaN(j)) {
-	        result = j;
-	      }
-	      break;
-
-	    case 'object':
-	      if (j instanceof Currency) {
-	        result = j.copyTo({})._value;
-	      }
-	      break;
-	  }
-
-	  this._value = result;
-
+	Function.prototype.method = function(name, func) {
+	  this.prototype[name] = func;
 	  return this;
 	};
 
-	Currency.prototype.parse_bytes = function (byte_array) {
-	  if (Array.isArray(byte_array) && byte_array.length === 20) {
-	    var result;
-	    // is it 0 everywhere except 12, 13, 14?
-	    var isZeroExceptInStandardPositions = true;
+	function filterErr(code, done) {
+	  return function(e) {
+	    done(e.code !== code ? e : void(0));
+	  };
+	};
 
-	    for (var i=0; i<20; i++) {
-	      isZeroExceptInStandardPositions = isZeroExceptInStandardPositions && (i===12 || i===13 || i===14 || byte_array[0]===0)
+	function throwErr(done) {
+	  return function(e) {
+	    if (e) {
+	      throw e;
 	    }
-
-	    if (isZeroExceptInStandardPositions) {
-	      var currencyCode = String.fromCharCode(byte_array[12])
-	      + String.fromCharCode(byte_array[13])
-	      + String.fromCharCode(byte_array[14]);
-	      if (/^[A-Z0-9]{3}$/.test(currencyCode) && currencyCode !== "XRP" ) {
-	        this._value = currencyCode;
-	      } else if (currencyCode === "\0\0\0") {
-	        this._value = 0;
-	      } else {
-	        this._value = NaN;
-	      }
-	    } else {
-	      // XXX Should support non-standard currency codes
-	      this._value = NaN;
-	    }
-	  } else {
-	    this._value = NaN;
-	  }
-	  return this;
+	    done();
+	  };
 	};
 
-	Currency.prototype.is_native = function () {
-	  return !isNaN(this._value) && !this._value;
+	function trace(comment, func) {
+	  return function() {
+	    console.log("%s: %s", trace, arguments.toString);
+	    func(arguments);
+	  };
 	};
 
-	Currency.prototype.is_valid = function () {
-	  return typeof this._value === 'string' || !isNaN(this._value);
-	};
+	function arraySet(count, value) {
+	  var a = new Array(count);
 
-	Currency.prototype.to_json = function () {
-	  return this._value ? this._value : "XRP";
-	};
-
-	Currency.prototype.to_human = function () {
-	  return this._value ? this._value : "XRP";
-	};
-
-	exports.Currency = Currency;
-
-	// vim:sw=2:sts=2:ts=8:et
-
-
-/***/ },
-
-/***/ 5:
-/***/ function(module, exports, require) {
-
-	var sjcl    = require(11).sjcl;
-	var utils   = require(11);
-	var extend  = require(41);
-
-	var BigInteger = utils.jsbn.BigInteger;
-
-	var Base = {};
-
-	var alphabets = Base.alphabets = {
-	  ripple  :  "rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz",
-	  tipple  :  "RPShNAF39wBUDnEGHJKLM4pQrsT7VWXYZ2bcdeCg65jkm8ofqi1tuvaxyz",
-	  bitcoin :  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-	};
-
-	extend(Base, {
-	  VER_NONE              : 1,
-	  VER_NODE_PUBLIC       : 28,
-	  VER_NODE_PRIVATE      : 32,
-	  VER_ACCOUNT_ID        : 0,
-	  VER_ACCOUNT_PUBLIC    : 35,
-	  VER_ACCOUNT_PRIVATE   : 34,
-	  VER_FAMILY_GENERATOR  : 41,
-	  VER_FAMILY_SEED       : 33
-	});
-
-	function sha256(bytes) {
-	  return sjcl.codec.bytes.fromBits(sjcl.hash.sha256.hash(sjcl.codec.bytes.toBits(bytes)));
-	};
-
-	function sha256hash(bytes) {
-	  return sha256(sha256(bytes));
-	};
-
-	// --> input: big-endian array of bytes.
-	// <-- string at least as long as input.
-	Base.encode = function (input, alpha) {
-	  var alphabet = alphabets[alpha || 'ripple'];
-	  var bi_base  = new BigInteger(String(alphabet.length));
-	  var bi_q     = new BigInteger();
-	  var bi_r     = new BigInteger();
-	  var bi_value = new BigInteger(input);
-	  var buffer   = [];
-
-	  while (bi_value.compareTo(BigInteger.ZERO) > 0) {
-	    bi_value.divRemTo(bi_base, bi_q, bi_r);
-	    bi_q.copyTo(bi_value);
-	    buffer.push(alphabet[bi_r.intValue()]);
+	  for (var i=0; i<count; i++) {
+	    a[i] = value;
 	  }
 
-	  for (var i=0; i !== input.length && !input[i]; i += 1) {
-	    buffer.push(alphabet[0]);
-	  }
-
-	  return buffer.reverse().join('');
+	  return a;
 	};
 
-	// --> input: String
-	// <-- array of bytes or undefined.
-	Base.decode = function (input, alpha) {
-	  if (typeof input !== 'string') {
-	    return void(0);
+	function hexToString(h) {
+	  var a = [];
+	  var i = 0;
+
+	  if (h.length % 2) {
+	    a.push(String.fromCharCode(parseInt(h.substring(0, 1), 16)));
+	    i = 1;
 	  }
 
-	  var alphabet = alphabets[alpha || 'ripple'];
-	  var bi_base  = new BigInteger(String(alphabet.length));
-	  var bi_value = new BigInteger();
-	  var i;
-
-	  for (i = 0; i != input.length && input[i] === alphabet[0]; i += 1)
-	  ;
-
-	  for (; i !== input.length; i += 1) {
-	    var v = alphabet.indexOf(input[i]);
-
-	    if (v < 0) {
-	      return void(0);
-	    }
-
-	    var r = new BigInteger();
-	    r.fromInt(v);
-	    bi_value  = bi_value.multiply(bi_base).add(r);
+	  for (; i<h.length; i+=2) {
+	    a.push(String.fromCharCode(parseInt(h.substring(i, i+2), 16)));
 	  }
 
-	  // toByteArray:
-	  // - Returns leading zeros!
-	  // - Returns signed bytes!
-	  var bytes =  bi_value.toByteArray().map(function (b) { return b ? b < 0 ? 256+b : b : 0; });
-	  var extra = 0;
-
-	  while (extra != bytes.length && !bytes[extra]) {
-	    extra += 1;
-	  }
-
-	  if (extra) {
-	    bytes = bytes.slice(extra);
-	  }
-
-	  var zeros = 0;
-
-	  while (zeros !== input.length && input[zeros] === alphabet[0]) {
-	    zeros += 1;
-	  }
-
-	  return [].concat(utils.arraySet(zeros, 0), bytes);
+	  return a.join('');
 	};
 
-	Base.verify_checksum = function (bytes) {
-	  var computed = sha256hash(bytes.slice(0, -4)).slice(0, 4);
-	  var checksum = bytes.slice(-4);
-	  var result = true;
-
-	  for (var i=0; i<4; i++) {
-	    if (computed[i] !== checksum[i]) {
-	      result = false;
-	      break;
-	    }
+	function stringToHex(s) {
+	  var result = '';
+	  for (var i=0; i<s.length; i++) {
+	    var b = s.charCodeAt(i);
+	    result += b < 16 ? '0' + b.toString(16) : b.toString(16);
 	  }
-
 	  return result;
 	};
 
-	// --> input: Array
-	// <-- String
-	Base.encode_check = function (version, input, alphabet) {
-	  var buffer = [].concat(version, input);
-	  var check  = sha256(sha256(buffer)).slice(0, 4);
+	function stringToArray(s) {
+	  var a = new Array(s.length);
 
-	  return Base.encode([].concat(buffer, check), alphabet);
+	  for (var i=0; i<a.length; i+=1) {
+	    a[i] = s.charCodeAt(i);
+	  }
+
+	  return a;
 	};
 
-	// --> input : String
-	// <-- NaN || BigInteger
-	Base.decode_check = function (version, input, alphabet) {
-	  var buffer = Base.decode(input, alphabet);
+	function hexToArray(h) {
+	  return stringToArray(hexToString(h));
+	};
 
-	  if (!buffer || buffer.length < 5) {
-	    return NaN;
-	  }
+	function chunkString(str, n, leftAlign) {
+	  var ret = [];
+	  var i=0, len=str.length;
 
-	  // Single valid version
-	  if (typeof version === 'number' && buffer[0] !== version) {
-	    return NaN;
-	  }
-
-	  // Multiple allowed versions
-	  if (Array.isArray(version)) {
-	    var match = false;
-
-	    for (var i=0, l=version.length; i<l; i++) {
-	      match |= version[i] === buffer[0];
-	    }
-
-	    if (!match) {
-	      return NaN;
+	  if (leftAlign) {
+	    i = str.length % n;
+	    if (i) {
+	      ret.push(str.slice(0, i));
 	    }
 	  }
 
-	  if (!Base.verify_checksum(buffer)) {
-	    return NaN;
+	  for(; i<len; i+=n) {
+	    ret.push(str.slice(i, n + i));
 	  }
 
-	  // We'll use the version byte to add a leading zero, this ensures JSBN doesn't
-	  // intrepret the value as a negative number
-	  buffer[0] = 0;
-
-	  return new BigInteger(buffer.slice(0, -4), 256);
+	  return ret;
 	};
 
-	exports.Base = Base;
+	function logObject(msg) {
+	  var args = Array.prototype.slice.call(arguments, 1);
 
-
-/***/ },
-
-/***/ 6:
-/***/ function(module, exports, require) {
-
-	// Transactions
-	//
-	//  Construction:
-	//    remote.transaction()  // Build a transaction object.
-	//     .offer_create(...)   // Set major parameters.
-	//     .set_flags()         // Set optional parameters.
-	//     .on()                // Register for events.
-	//     .submit();           // Send to network.
-	//
-	//  Events:
-	// 'success' : Transaction submitted without error.
-	// 'error' : Error submitting transaction.
-	// 'proposed' : Advisory proposed status transaction.
-	// - A client should expect 0 to multiple results.
-	// - Might not get back. The remote might just forward the transaction.
-	// - A success could be reverted in final.
-	// - local error: other remotes might like it.
-	// - malformed error: local server thought it was malformed.
-	// - The client should only trust this when talking to a trusted server.
-	// 'final' : Final status of transaction.
-	// - Only expect a final from dishonest servers after a tesSUCCESS or ter*.
-	// 'lost' : Gave up looking for on ledger_closed.
-	// 'pending' : Transaction was not found on ledger_closed.
-	// 'state' : Follow the state of a transaction.
-	//    'client_submitted'     - Sent to remote
-	//     |- 'remoteError'      - Remote rejected transaction.
-	//      \- 'client_proposed' - Remote provisionally accepted transaction.
-	//       |- 'client_missing' - Transaction has not appeared in ledger as expected.
-	//       | |\- 'client_lost' - No longer monitoring missing transaction.
-	//       |/
-	//       |- 'tesSUCCESS'     - Transaction in ledger as expected.
-	//       |- 'ter...'         - Transaction failed.
-	//       \- 'tec...'         - Transaction claimed fee only.
-	//
-	// Notes:
-	// - All transactions including those with local and malformed errors may be
-	//   forwarded anyway.
-	// - A malicous server can:
-	//   - give any proposed result.
-	//     - it may declare something correct as incorrect or something correct as incorrect.
-	//     - it may not communicate with the rest of the network.
-	//   - may or may not forward.
-	//
-
-	var EventEmitter     = require(25).EventEmitter;
-	var util             = require(26);
-
-	var sjcl             = require(11).sjcl;
-
-	var Amount           = require(3).Amount;
-	var Currency         = require(3).Currency;
-	var UInt160          = require(3).UInt160;
-	var Seed             = require(18).Seed;
-	var SerializedObject = require(8).SerializedObject;
-	var RippleError      = require(10).RippleError;
-
-	var hashprefixes     = require(19);
-
-	var config           = require(13);
-
-	// A class to implement transactions.
-	// - Collects parameters
-	// - Allow event listeners to be attached to determine the outcome.
-	function Transaction(remote) {
-	  EventEmitter.call(this);
-
-	  var self  = this;
-
-	  this.remote                 = remote;
-	  this._secret                = void(0);
-	  this._build_path            = false;
-
-	  // Transaction data.
-	  this.tx_json                = { Flags: 0 };
-
-	  // ledger_current_index was this when transaction was submited.
-	  this.submit_index           = void(0);
-
-	  // Under construction.
-	  this.state                  = void(0);
-
-	  this.finalized              = false;
-	  this._previous_signing_hash = void(0);
-	};
-
-	util.inherits(Transaction, EventEmitter);
-
-	// XXX This needs to be determined from the network.
-	Transaction.fee_units = {
-	  default: 10,
-	};
-
-	Transaction.flags = {
-	  AccountSet: {
-	    RequireDestTag:     0x00010000,
-	    OptionalDestTag:    0x00020000,
-	    RequireAuth:        0x00040000,
-	    OptionalAuth:       0x00080000,
-	    DisallowXRP:        0x00100000,
-	    AllowXRP:           0x00200000
-	  },
-
-	  TrustSet: {
-	    SetAuth:            0x00010000,
-	    NoRipple:           0x00020000,
-	    ClearNoRipple:      0x00040000
-	  },
-
-	  OfferCreate: {
-	    Passive:            0x00010000,
-	    ImmediateOrCancel:  0x00020000,
-	    FillOrKill:         0x00040000,
-	    Sell:               0x00080000
-	  },
-
-	  Payment: {
-	    NoRippleDirect:     0x00010000,
-	    PartialPayment:     0x00020000,
-	    LimitQuality:       0x00040000
-	  }
-	};
-
-	Transaction.formats = require(9).tx;
-
-	Transaction.prototype.consts = {
-	  telLOCAL_ERROR:  -399,
-	  temMALFORMED:    -299,
-	  tefFAILURE:      -199,
-	  terRETRY:        -99,
-	  tesSUCCESS:      0,
-	  tecCLAIMED:      100,
-	};
-
-	Transaction.from_json = function(j) {
-	  return (new Transaction()).parse_json(j);
-	};
-
-	Transaction.prototype.isTelLocal = function(ter) {
-	  return ter >= this.consts.telLOCAL_ERROR && ter < this.consts.temMALFORMED;
-	};
-
-	Transaction.prototype.isTemMalformed = function(ter) {
-	  return ter >= this.consts.temMALFORMED && ter < this.consts.tefFAILURE;
-	};
-
-	Transaction.prototype.isTefFailure = function(ter) {
-	  return ter >= this.consts.tefFAILURE && ter < this.consts.terRETRY;
-	};
-
-	Transaction.prototype.isTerRetry = function(ter) {
-	  return ter >= this.consts.terRETRY && ter < this.consts.tesSUCCESS;
-	};
-
-	Transaction.prototype.isTepSuccess = function(ter) {
-	  return ter >= this.consts.tesSUCCESS;
-	};
-
-	Transaction.prototype.isTecClaimed = function(ter) {
-	  return ter >= this.consts.tecCLAIMED;
-	};
-
-	Transaction.prototype.isRejected = function(ter) {
-	  return this.isTelLocal(ter) || this.isTemMalformed(ter) || this.isTefFailure(ter);
-	};
-
-	Transaction.prototype.setState = function(state) {
-	  if (this.state !== state) {
-	    this.state  = state;
-	    this.emit('state', state);
-	  }
-	};
-
-	/**
-	 * TODO
-	 * Actually do this right
-	 */
-
-	Transaction.prototype.getFee = function() {
-	  return Transaction.fees['default'].to_json();
-	};
-
-	/**
-	 * Attempts to complete the transaction for submission.
-	 *
-	 * This function seeks to fill out certain fields, such as Fee and
-	 * SigningPubKey, which can be determined by the library based on network
-	 * information and other fields.
-	 */
-	Transaction.prototype.complete = function() {
-	  if (this.remote && typeof this.tx_json.Fee === 'undefined') {
-	    if (this.remote.local_fee || !this.remote.trusted) {
-	      this.tx_json.Fee = this.remote.fee_tx(this.fee_units()).to_json();
-	    }
-	  }
-
-	  if (typeof this.tx_json.SigningPubKey === 'undefined') {
-	    var seed = Seed.from_json(this._secret);
-	    var key  = seed.get_key(this.tx_json.Account);
-	    this.tx_json.SigningPubKey = key.to_hex_pub();
-	  }
-
-	  return this.tx_json;
-	};
-
-	Transaction.prototype.serialize = function() {
-	  return SerializedObject.from_json(this.tx_json);
-	};
-
-	Transaction.prototype.signingHash = function() {
-	  return this.hash(config.testnet ? 'HASH_TX_SIGN_TESTNET' : 'HASH_TX_SIGN');
-	};
-
-	Transaction.prototype.hash = function(prefix, as_uint256) {
-	  if (typeof prefix === 'string') {
-	    if (typeof hashprefixes[prefix] === 'undefined') {
-	      throw new Error('Unknown hashing prefix requested.');
-	    }
-	    prefix = hashprefixes[prefix];
-	  } else if (!prefix) {
-	    prefix = hashprefixes['HASH_TX_ID'];
-	  }
-
-	  var hash = SerializedObject.from_json(this.tx_json).hash(prefix);
-
-	  return as_uint256 ? hash : hash.to_hex();
-	};
-
-	Transaction.prototype.sign = function() {
-	  var seed = Seed.from_json(this._secret);
-
-	  var prev_sig = this.tx_json.TxnSignature;
-	  delete this.tx_json.TxnSignature;
-
-	  var hash = this.signing_hash();
-
-	  // If the hash is the same, we can re-use the previous signature
-	  if (prev_sig && hash === this._previous_signing_hash) {
-	    this.tx_json.TxnSignature = prev_sig;
-	    return;
-	  }
-
-	  var key  = seed.get_key(this.tx_json.Account);
-	  var sig  = key.sign(hash, 0);
-	  var hex  = sjcl.codec.hex.fromBits(sig).toUpperCase();
-
-	  this.tx_json.TxnSignature = hex;
-	  this._previous_signing_hash = hash;
-	};
-
-	//
-	// Set options for Transactions
-	//
-
-	// --> build: true, to have server blindly construct a path.
-	//
-	// "blindly" because the sender has no idea of the actual cost except that is must be less than send max.
-	Transaction.prototype.buildPath = function(build) {
-	  this._build_path = build;
-	  return this;
-	};
-
-	// tag should be undefined or a 32 bit integer.
-	// YYY Add range checking for tag.
-	Transaction.prototype.destinationTag = function(tag) {
-	  if (tag !== void(0)) {
-	    this.tx_json.DestinationTag = tag;
-	  }
-	  return this;
-	};
-
-	Transaction.prototype.invoiceID = function(id) {
-	  if (typeof id === 'string') {
-	    while (id.length < 64) id += '0';
-	    this.tx_json.InvoiceID = id;
-	  }
-	  return this;
-	};
-
-	Transaction._pathRewrite = function(path) {
-	  return path.map(function(node) {
-	    var newNode = { };
-
-	    if (node.hasOwnProperty('account')) {
-	      newNode.account = UInt160.json_rewrite(node.account);
-	    }
-
-	    if (node.hasOwnProperty('issuer')) {
-	      newNode.issuer = UInt160.json_rewrite(node.issuer);
-	    }
-
-	    if (node.hasOwnProperty('currency')) {
-	      newNode.currency = Currency.json_rewrite(node.currency);
-	    }
-
-	    return newNode
+	  args = args.map(function(arg) {
+	    return JSON.stringify(arg, null, 2);
 	  });
+
+	  args.unshift(msg);
+
+	  console.log.apply(console, args);
 	};
 
-	Transaction.prototype.pathAdd = function(path) {
-	  if (Array.isArray(path)) {
-	    this.tx_json.Paths  = this.tx_json.Paths || [];
-	    this.tx_json.Paths.push(Transaction._pathRewrite(path));
+	function assert(assertion, msg) {
+	  if (!assertion) {
+	    throw new Error("Assertion failed" + (msg ? ": "+msg : "."));
 	  }
-	  return this;
-	};
-
-	// --> paths: undefined or array of path
-	// // A path is an array of objects containing some combination of: account, currency, issuer
-
-	Transaction.prototype.paths = function(paths) {
-	  if (Array.isArray(paths)) {
-	    for (var i=0, l=paths.length; i<l; i++) {
-	      this.pathAdd(paths[i]);
-	    }
-	  }
-	  return this;
-	};
-
-	// If the secret is in the config object, it does not need to be provided.
-	Transaction.prototype.secret = function(secret) {
-	  this._secret = secret;
-	};
-
-	Transaction.prototype.sendMax = function(send_max) {
-	  if (send_max) {
-	    this.tx_json.SendMax = Amount.json_rewrite(send_max);
-	  }
-	  return this;
-	};
-
-	// tag should be undefined or a 32 bit integer.
-	// YYY Add range checking for tag.
-	Transaction.prototype.sourceTag = function(tag) {
-	  if (tag) {
-	    this.tx_json.SourceTag = tag;
-	  }
-	  return this;
-	};
-
-	// --> rate: In billionths.
-	Transaction.prototype.transferRate = function(rate) {
-	  this.tx_json.TransferRate = Number(rate);
-
-	  if (this.tx_json.TransferRate < 1e9) {
-	    throw new Error('invalidTransferRate');
-	  }
-
-	  return this;
-	};
-
-	// Add flags to a transaction.
-	// --> flags: undefined, _flag_, or [ _flags_ ]
-	Transaction.prototype.setFlags = function(flags) {
-	  if (!flags) return this;
-
-	  var transaction_flags = Transaction.flags[this.tx_json.TransactionType];
-	  var flag_set = Array.isArray(flags) ? flags : Array.prototype.slice.call(arguments);
-
-	  // We plan to not define this field on new Transaction.
-	  if (this.tx_json.Flags === void(0)) {
-	    this.tx_json.Flags = 0;
-	  }
-
-	  for (var i=0, l=flag_set.length; i<l; i++) {
-	    var flag = flag_set[i];
-	    if (transaction_flags.hasOwnProperty(flag)) {
-	      this.tx_json.Flags += transaction_flags[flag];
-	    } else {
-	      // XXX Immediately report an error or mark it.
-	    }
-	  }
-
-	  return this;
-	};
-
-	Transaction.prototype._accountSecret = function(account) {
-	  // Fill in secret from remote, if available.
-	  return this.remote.secrets[account];
-	};
-
-	// Options:
-	//  .domain()           NYI
-	//  .flags()
-	//  .message_key()      NYI
-	//  .transfer_rate()
-	//  .wallet_locator()   NYI
-	//  .wallet_size()      NYI
-	Transaction.prototype.accountSet = function(src) {
-	  if (typeof src === 'object') {
-	    var options = src;
-	    src = options.source || options.from;
-	  }
-
-	  if (!UInt160.is_valid(src)) {
-	    throw new Error('Source address invalid');
-	  }
-
-	  this._secret                  = this._account_secret(src);
-	  this.tx_json.TransactionType  = 'AccountSet';
-	  this.tx_json.Account          = UInt160.json_rewrite(src);
-	  return this;
-	};
-
-	Transaction.prototype.claim = function(src, generator, public_key, signature) {
-	  if (typeof src === 'object') {
-	    var options = src;
-	    signature  = options.signature;
-	    public_key = options.public_key;
-	    generator  = options.generator;
-	    src        = options.source || options.from;
-	  }
-
-	  this._secret                 = this._account_secret(src);
-	  this.tx_json.TransactionType = 'Claim';
-	  this.tx_json.Generator       = generator;
-	  this.tx_json.PublicKey       = public_key;
-	  this.tx_json.Signature       = signature;
-	  return this;
-	};
-
-	Transaction.prototype.offerCancel = function(src, sequence) {
-	  if (typeof src === 'object') {
-	    var options = src;
-	    sequence = options.sequence;
-	    src      = options.source || options.from;
-	  }
-
-	  if (!UInt160.is_valid(src)) {
-	    throw new Error('Source address invalid');
-	  }
-
-	  this._secret                 = this._account_secret(src);
-	  this.tx_json.TransactionType = 'OfferCancel';
-	  this.tx_json.Account         = UInt160.json_rewrite(src);
-	  this.tx_json.OfferSequence   = Number(sequence);
-	  return this;
-	};
-
-	// Options:
-	//  .set_flags()
-	// --> expiration : if not undefined, Date or Number
-	// --> cancel_sequence : if not undefined, Sequence
-	Transaction.prototype.offerCreate = function(src, taker_pays, taker_gets, expiration, cancel_sequence) {
-	  if (typeof src === 'object') {
-	    var options = src;
-	    cancel_sequence = options.cancel_sequence;
-	    expiration      = options.expiration;
-	    taker_gets      = options.taker_gets || options.sell;
-	    taker_pays      = options.taker_pays || options.buy;
-	    src             = options.source || options.from;
-	  }
-
-	  if (!UInt160.is_valid(src)) {
-	    throw new Error('Source address invalid');
-	  }
-
-	  this._secret                 = this._account_secret(src);
-	  this.tx_json.TransactionType = 'OfferCreate';
-	  this.tx_json.Account         = UInt160.json_rewrite(src);
-	  this.tx_json.TakerPays       = Amount.json_rewrite(taker_pays);
-	  this.tx_json.TakerGets       = Amount.json_rewrite(taker_gets);
-
-	  if (expiration) {
-	    switch (expiration.constructor) {
-	      case Date:
-	        var offset = (new Date(2000, 0, 1).getTime()) - (new Date(1970, 0, 1).getTime());
-	        this.tx_json.Expiration = expiration.getTime() - offset;
-	        break;
-	      case Number:
-	        this.tx_json.Expiration = expiration;
-	        break;
-	    }
-	  }
-
-	  if (cancel_sequence) {
-	    this.tx_json.OfferSequence = Number(cancel_sequence);
-	  }
-
-	  return this;
-	};
-
-	Transaction.prototype.passwordFund = function(src, dst) {
-	  if (typeof src === 'object') {
-	    var options = src;
-	    dst = options.destination || options.to;
-	    src = options.source || options.from;
-	  }
-
-	  if (!UInt160.is_valid(dst)) {
-	    throw new Error('Destination address invalid');
-	  }
-
-	  this._secret                 = this._account_secret(src);
-	  this.tx_json.TransactionType = 'PasswordFund';
-	  this.tx_json.Destination     = UInt160.json_rewrite(dst);
-	  return this;
-	};
-
-	Transaction.prototype.passwordSet = function(src, authorized_key, generator, public_key, signature) {
-	  if (typeof src === 'object') {
-	    var options = src;
-	    signature      = options.signature;
-	    public_key     = options.public_key;
-	    generator      = options.generator;
-	    authorized_key = options.authorized_key;
-	    src            = options.source || options.from;
-	  }
-
-	  if (!UInt160.is_valid(src)) {
-	    throw new Error('Source address invalid');
-	  }
-
-	  this._secret                 = this._account_secret(src);
-	  this.tx_json.TransactionType = 'PasswordSet';
-	  this.tx_json.RegularKey      = authorized_key;
-	  this.tx_json.Generator       = generator;
-	  this.tx_json.PublicKey       = public_key;
-	  this.tx_json.Signature       = signature;
-	  return this;
-	};
-
-	// Construct a 'payment' transaction.
-	//
-	// When a transaction is submitted:
-	// - If the connection is reliable and the server is not merely forwarding and is not malicious,
-	// --> src : UInt160 or String
-	// --> dst : UInt160 or String
-	// --> deliver_amount : Amount or String.
-	//
-	// Options:
-	//  .paths()
-	//  .build_path()
-	//  .destination_tag()
-	//  .path_add()
-	//  .secret()
-	//  .send_max()
-	//  .set_flags()
-	//  .source_tag()
-	Transaction.prototype.payment = function(src, dst, amount) {
-	  if (typeof src === 'object') {
-	    var options = src;
-	    amount = options.amount;
-	    dst    = options.destination || options.to;
-	    src    = options.source || options.from;
-	    if (options.invoiceID) this.invoiceID(options.invoiceID);
-	  }
-
-	  if (!UInt160.is_valid(src)) {
-	    throw new Error('Payment source address invalid');
-	  }
-
-	  if (!UInt160.is_valid(dst)) {
-	    throw new Error('Payment destination address invalid');
-	  }
-
-	  if (/^[\d]+[A-Z]{3}$/.test(amount)) {
-	    amount = Amount.from_human(amount);
-	  }
-
-	  this._secret                 = this._account_secret(src);
-	  this.tx_json.TransactionType = 'Payment';
-	  this.tx_json.Account         = UInt160.json_rewrite(src);
-	  this.tx_json.Amount          = Amount.json_rewrite(amount);
-	  this.tx_json.Destination     = UInt160.json_rewrite(dst);
-
-	  return this;
-	}
-
-	Transaction.prototype.rippleLineSet = function(src, limit, quality_in, quality_out) {
-	  if (typeof src === 'object') {
-	    var options = src;
-	    quality_out = options.quality_out;
-	    quality_in  = options.quality_in;
-	    limit       = options.limit;
-	    src         = options.source || options.from;
-	  }
-
-	  if (!UInt160.is_valid(src)) {
-	    throw new Error('Source address invalid');
-	  }
-
-	  this._secret                 = this._account_secret(src);
-	  this.tx_json.TransactionType = 'TrustSet';
-	  this.tx_json.Account         = UInt160.json_rewrite(src);
-
-	  // Allow limit of 0 through.
-	  if (limit !== void(0)) {
-	    this.tx_json.LimitAmount = Amount.json_rewrite(limit);
-	  }
-
-	  if (quality_in) {
-	    this.tx_json.QualityIn = quality_in;
-	  }
-
-	  if (quality_out) {
-	    this.tx_json.QualityOut = quality_out;
-	  }
-
-	  // XXX Throw an error if nothing is set.
-
-	  return this;
-	};
-
-	Transaction.prototype.walletAdd = function(src, amount, authorized_key, public_key, signature) {
-	  if (typeof src === 'object') {
-	    var options = src;
-	    signature      = options.signature;
-	    public_key     = options.public_key;
-	    authorized_key = options.authorized_key;
-	    amount         = options.amount;
-	    src            = options.source || options.from;
-	  }
-
-	  if (!UInt160.is_valid(src)) {
-	    throw new Error('Source address invalid');
-	  }
-
-	  this._secret                  = this._account_secret(src);
-	  this.tx_json.TransactionType  = 'WalletAdd';
-	  this.tx_json.Amount           = Amount.json_rewrite(amount);
-	  this.tx_json.RegularKey       = authorized_key;
-	  this.tx_json.PublicKey        = public_key;
-	  this.tx_json.Signature        = signature;
-	  return this;
 	};
 
 	/**
-	 * Returns the number of fee units this transaction will cost.
-	 *
-	 * Each Ripple transaction based on its type and makeup costs a certain number
-	 * of fee units. The fee units are calculated on a per-server basis based on the
-	 * current load on both the network and the server.
-	 *
-	 * @see https://ripple.com/wiki/Transaction_Fee
-	 *
-	 * @return {Number} Number of fee units for this transaction.
+	 * Return unique values in array.
 	 */
-	Transaction.prototype.feeUnits = function() {
-	  return Transaction.fee_units['default'];
-	};
+	function arrayUnique(arr) {
+	  var u = {}, a = [];
 
-	// Submit a transaction to the network.
-	Transaction.prototype.submit = function(callback) {
-	  var self = this;
-
-	  this.callback = typeof callback === 'function' ? callback : function(){};
-
-	  function submissionError(error, message) {
-	    if (!(error instanceof RippleError)) {
-	      error = new RippleError(error, message);
+	  for (var i=0, l=arr.length; i<l; i++){
+	    var k = arr[i];
+	    if (u[k]) {
+	      continue;
 	    }
-	    self.callback(error);
-	  };
-
-	  this.once('error', submissionError);
-
-	  function submissionSuccess(message) {
-	    self.callback(null, message);
-	  };
-
-	  this.once('success', submissionSuccess);
-
-	  this.on('error', function(){});
-
-	  var account = this.tx_json.Account;
-
-	  if (typeof account !== 'string') {
-	    this.emit('error', new RippleError('tejInvalidAccount', 'Account is unspecified'));
-	  } else {
-	    // YYY Might check paths for invalid accounts.
-	    this.remote.account(account).submit(this);
+	    a.push(k);
+	    u[k] = true;
 	  }
 
-	  return this;
+	  return a;
 	};
 
-	Transaction.prototype.abort = function(callback) {
-	  if (!this.finalized) {
-	    var callback = typeof callback === 'function' ? callback : function(){};
-	    this.once('final', callback);
-	    this.emit('abort');
-	  }
+	/**
+	 * Convert a ripple epoch to a JavaScript timestamp.
+	 *
+	 * JavaScript timestamps are unix epoch in milliseconds.
+	 */
+	function toTimestamp(rpepoch) {
+	  return (rpepoch + 0x386D4380) * 1000;
 	};
 
-	Transaction.prototype.parseJson = function(v) {
-	  this.tx_json = v;
-	  return this;
-	};
+	exports.trace         = trace;
+	exports.arraySet      = arraySet;
+	exports.hexToString   = hexToString;
+	exports.hexToArray    = hexToArray;
+	exports.stringToArray = stringToArray;
+	exports.stringToHex   = stringToHex;
+	exports.chunkString   = chunkString;
+	exports.logObject     = logObject;
+	exports.assert        = assert;
+	exports.arrayUnique   = arrayUnique;
+	exports.toTimestamp   = toTimestamp;
 
-	exports.Transaction = Transaction;
+	// Going up three levels is needed to escape the src-cov folder used for the
+	// test coverage stuff.
+	exports.sjcl = require(29);
+	exports.jsbn = require(30);
 
 	// vim:sw=2:sts=2:ts=8:et
 
 
 /***/ },
 
-/***/ 7:
-/***/ function(module, exports, require) {
-
-	var extend  = require(41);
-	var utils   = require(11);
-	var UInt160 = require(14).UInt160;
-	var Amount  = require(3).Amount;
-
-	/**
-	 * Meta data processing facility.
-	 */
-	function Meta(raw_data) {
-	  var self = this;
-
-	  this.nodes = [ ];
-
-	  this.node_types = [
-	      'CreatedNode'
-	    , 'ModifiedNode'
-	    , 'DeletedNode'
-	  ];
-
-	  for (var i=0, l=raw_data.AffectedNodes.length; i<l; i++) {
-	    var an = raw_data.AffectedNodes[i];
-	    var result = { };
-
-	    self.node_types.forEach(function (x) {
-	      if (an.hasOwnProperty(x)) {
-	        result.diffType = x;
-	      }
-	    });
-
-	    if (!result.diffType) {
-	      return null;
-	    }
-
-	    an = an[result.diffType];
-
-	    result.entryType = an.LedgerEntryType;
-	    result.ledgerIndex = an.LedgerIndex;
-	    result.fields = extend({}, an.PreviousFields, an.NewFields, an.FinalFields);
-	    result.fieldsPrev = an.PreviousFields || {};
-	    result.fieldsNew = an.NewFields || {};
-	    result.fieldsFinal = an.FinalFields || {};
-
-	    this.nodes.push(result);
-	  }
-	};
-
-	/**
-	 * Execute a function on each affected node.
-	 *
-	 * The callback is passed two parameters. The first is a node object which looks
-	 * like this:
-	 *
-	 *   {
-	 *     // Type of diff, e.g. CreatedNode, ModifiedNode
-	 *     diffType: 'CreatedNode'
-	 *
-	 *     // Type of node affected, e.g. RippleState, AccountRoot
-	 *     entryType: 'RippleState',
-	 *
-	 *     // Index of the ledger this change occurred in
-	 *     ledgerIndex: '01AB01AB...',
-	 *
-	 *     // Contains all fields with later versions taking precedence
-	 *     //
-	 *     // This is a shorthand for doing things like checking which account
-	 *     // this affected without having to check the diffType.
-	 *     fields: {...},
-	 *
-	 *     // Old fields (before the change)
-	 *     fieldsPrev: {...},
-	 *
-	 *     // New fields (that have been added)
-	 *     fieldsNew: {...},
-	 *
-	 *     // Changed fields
-	 *     fieldsFinal: {...}
-	 *   }
-	 *
-	 * The second parameter to the callback is the index of the node in the metadata
-	 * (first entry is index 0).
-	 */
-	Meta.prototype.each = function (fn) {
-	  for (var i = 0, l = this.nodes.length; i < l; i++) {
-	    fn(this.nodes[i], i);
-	  }
-	};
-
-	([ 'forEach'
-	  , 'map'
-	  , 'filter'
-	  , 'every'
-	  , 'reduce'
-	]).forEach(function(fn) {
-	  Meta.prototype[fn] = function() {
-	    return Array.prototype[fn].apply(this.nodes, arguments);
-	  }
-	});
-
-	var amountFieldsAffectingIssuer = [
-	    "LowLimit"
-	  , "HighLimit"
-	  , "TakerPays"
-	  , "TakerGets"
-	];
-
-	Meta.prototype.getAffectedAccounts = function () {
-	  var accounts = [ ];
-
-	  // This code should match the behavior of the C++ method:
-	  // TransactionMetaSet::getAffectedAccounts
-	  this.nodes.forEach(function (an) {
-	    var fields = (an.diffType === "CreatedNode") ? an.fieldsNew : an.fieldsFinal;
-	    for (var i in fields) {
-	      var field = fields[i];
-	      if (typeof field === 'string' && UInt160.is_valid(field)) {
-	        accounts.push(field);
-	      } else if (amountFieldsAffectingIssuer.indexOf(i) !== -1) {
-	        var amount = Amount.from_json(field);
-	        var issuer = amount.issuer();
-	        if (issuer.is_valid() && !issuer.is_zero()) {
-	          accounts.push(issuer.to_json());
-	        }
-	      }
-	    }
-	  });
-
-	  return utils.arrayUnique(accounts);
-	};
-
-	Meta.prototype.getAffectedBooks = function () {
-	  var books = [ ];
-
-	  this.nodes.forEach(function (an) {
-	    if (an.entryType !== 'Offer') return;
-
-	    var gets = Amount.from_json(an.fields.TakerGets);
-	    var pays = Amount.from_json(an.fields.TakerPays);
-
-	    var getsKey = gets.currency().to_json();
-	    if (getsKey !== 'XRP') getsKey += '/' + gets.issuer().to_json();
-
-	    var paysKey = pays.currency().to_json();
-	    if (paysKey !== 'XRP') paysKey += '/' + pays.issuer().to_json();
-
-	    var key = getsKey + ":" + paysKey;
-
-	    books.push(key);
-	  });
-
-	  return utils.arrayUnique(books);
-	};
-
-	exports.Meta = Meta;
-
-
-/***/ },
-
-/***/ 8:
-/***/ function(module, exports, require) {
-
-	/* WEBPACK VAR INJECTION */(function(require, Buffer) {var binformat  = require(9);
-	var extend     = require(41);
-	var stypes     = require(20);
-	var UInt256    = require(21).UInt256;
-	var assert     = require(27);
-
-	var utils      = require(11);
-	var sjcl       = utils.sjcl;
-	var BigInteger = utils.jsbn.BigInteger;
-
-	var TRANSACTION_TYPES = { };
-
-	Object.keys(binformat.tx).forEach(function(key) {
-	  TRANSACTION_TYPES[binformat.tx[key][0]] = key;
-	});
-
-	var LEDGER_ENTRY_TYPES = {};
-
-	Object.keys(binformat.ledger).forEach(function(key) {
-	  LEDGER_ENTRY_TYPES[binformat.ledger[key][0]] = key;
-	});
-
-	var TRANSACTION_RESULTS = {};
-
-	Object.keys(binformat.ter).forEach(function(key) {
-	  TRANSACTION_RESULTS[binformat.ter[key]] = key;
-	});
-
-	function SerializedObject(buf) {
-	  if (Array.isArray(buf) || (Buffer && Buffer.isBuffer(buf)) ) {
-	    this.buffer = buf;
-	  } else if (typeof buf === 'string') {
-	    this.buffer = sjcl.codec.bytes.fromBits(sjcl.codec.hex.toBits(buf));
-	  } else if (!buf) {
-	    this.buffer = [];
-	  } else {
-	    throw new Error('Invalid buffer passed.');
-	  }
-	  this.pointer = 0;
-	};
-
-	SerializedObject.from_json = function (obj) {
-	  // Create a copy of the object so we don't modify it
-	  var obj = extend({}, obj);
-	  var so  = new SerializedObject;
-	  var typedef;
-
-	  if ("number" === typeof obj.TransactionType) {
-	    obj.TransactionType = SerializedObject.lookup_type_tx(obj.TransactionType);
-
-	    if (!obj.TransactionType) {
-	      throw new Error('Transaction type ID is invalid.');
-	    }
-	  }
-
-	  if ("string" === typeof obj.TransactionType) {
-	    typedef = binformat.tx[obj.TransactionType];
-
-	    if (!Array.isArray(typedef)) {
-	      throw new Error('Transaction type is invalid');
-	    }
-
-	    typedef = typedef.slice();
-	    obj.TransactionType = typedef.shift();
-	  } else if ("undefined" !== typeof obj.LedgerEntryType) {
-	    // XXX: TODO
-	    throw new Error('Ledger entry binary format not yet implemented.');
-	  } else if ("object" === typeof obj.AffectedNodes) {
-	    typedef = binformat.metadata;
-	  } else {
-	    throw new Error('Object to be serialized must contain either' +
-	                    ' TransactionType, LedgerEntryType or AffectedNodes.');
-	  }
-
-	  so.serialize(typedef, obj);
-
-	  return so;
-	};
-
-	SerializedObject.prototype.append = function (bytes) {
-	  if (bytes instanceof SerializedObject) {
-	    bytes = bytes.buffer;
-	  }
-	  this.buffer = this.buffer.concat(bytes);
-	  this.pointer += bytes.length;
-	};
-
-	SerializedObject.prototype.resetPointer = function () {
-	  this.pointer = 0;
-	};
-
-	function readOrPeek(advance) {
-	  return function(bytes) {
-	    var start = this.pointer;
-	    var end   = start + bytes;
-
-	    if (end > this.buffer.length) {
-	      throw new Error('Buffer length exceeded');
-	    }
-
-	    var result = this.buffer.slice(start, end);
-
-	    if (advance) {
-	      this.pointer = end;
-	    }
-
-	    return result;
-	  }
-	};
-
-	SerializedObject.prototype.read = readOrPeek(true);
-
-	SerializedObject.prototype.peek = readOrPeek(false);
-
-	SerializedObject.prototype.to_bits = function () {
-	  return sjcl.codec.bytes.toBits(this.buffer);
-	};
-
-	SerializedObject.prototype.to_hex = function () {
-	  return sjcl.codec.hex.fromBits(this.to_bits()).toUpperCase();
-	};
-
-	SerializedObject.prototype.to_json = function() {
-	  var old_pointer = this.pointer;
-	  this.resetPointer();
-	  var output = { };
-
-	  while (this.pointer < this.buffer.length) {
-	    var key_and_value = stypes.parse(this);
-	    var key = key_and_value[0];
-	    var value = key_and_value[1];
-	    output[key] = SerializedObject.jsonify_structure(value, key);
-	  }
-
-	  this.pointer = old_pointer;
-
-	  return output;
-	}
-
-	SerializedObject.jsonify_structure = function(structure, field_name) {
-	  var output;
-
-	  switch (typeof structure) {
-	    case 'number':
-	      switch (field_name) {
-	        case 'LedgerEntryType':
-	          output = LEDGER_ENTRY_TYPES[structure];
-	          break;
-	        case 'TransactionResult':
-	          output = TRANSACTION_RESULTS[structure];
-	          break;
-	        case 'TransactionType':
-	          output = TRANSACTION_TYPES[structure];
-	          break;
-	        default:
-	          output = structure;
-	      }
-	      break;
-	    case 'object':
-	      if (!structure) break; //null
-	      if (typeof structure.to_json === 'function') {
-	        output = structure.to_json();
-	      } else if (structure instanceof BigInteger) {
-	        output = structure.toString(16).toUpperCase();
-	      } else {
-	        output = new structure.constructor; //new Array or Object
-	        var keys = Object.keys(structure);
-	        for (var i=0, l=keys.length; i<l; i++) {
-	          var key = keys[i];
-	          output[key] = SerializedObject.jsonify_structure(structure[key], key);
-	        }
-	      }
-	      break;
-	    default:
-	      output = structure;
-	  }
-
-	  return output;
-	};
-
-	SerializedObject.prototype.serialize = function (typedef, obj) {
-	  // Serialize object without end marker
-	  stypes.Object.serialize(this, obj, true);
-
-	  // ST: Old serialization
-	  /*
-	  // Ensure canonical order
-	  typedef = SerializedObject.sort_typedef(typedef);
-
-	  // Serialize fields
-	  for (var i=0, l=typedef.length; i<l; i++) {
-	    this.serialize_field(typedef[i], obj);
-	  }
-	  */
-	};
-
-	SerializedObject.prototype.hash = function (prefix) {
-	  var sign_buffer = new SerializedObject();
-	  stypes.Int32.serialize(sign_buffer, prefix);
-	  sign_buffer.append(this.buffer);
-	  return sign_buffer.hash_sha512_half();
-	};
-
-	// DEPRECATED
-	SerializedObject.prototype.signing_hash = SerializedObject.prototype.hash;
-
-	SerializedObject.prototype.hash_sha512_half = function () {
-	  var bits = sjcl.codec.bytes.toBits(this.buffer);
-	  var hash = sjcl.bitArray.bitSlice(sjcl.hash.sha512.hash(bits), 0, 256);
-	  return UInt256.from_hex(sjcl.codec.hex.fromBits(hash));
-	};
-
-	SerializedObject.prototype.serialize_field = function (spec, obj) {
-	  var name     = spec[0];
-	  var presence = spec[1];
-	  var field_id = spec[2];
-	  var Type     = stypes[spec[3]];
-
-	  if (typeof obj[name] !== 'undefined') {
-	    // ST: Old serialization code
-	    //this.append(SerializedObject.get_field_header(Type.id, field_id));
-	    try {
-	      // ST: Old serialization code
-	      //Type.serialize(this, obj[name]);
-	      stypes.serialize(this, name, obj[name]);
-	    } catch (e) {
-	      // Add field name to message and rethrow
-	      e.message = 'Error serializing "' + name + '": ' + e.message;
-	      throw e;
-	    }
-	  } else if (presence === binformat.REQUIRED) {
-	    throw new Error('Missing required field ' + name);
-	  }
-	};
-
-	SerializedObject.get_field_header = function (type_id, field_id) {
-	  var buffer = [ 0 ];
-
-	  if (type_id > 0xF) {
-	    buffer.push(type_id & 0xFF);
-	  } else {
-	    buffer[0] += (type_id & 0xF) << 4;
-	  }
-
-	  if (field_id > 0xF) {
-	    buffer.push(field_id & 0xFF);
-	  } else {
-	    buffer[0] += field_id & 0xF;
-	  }
-
-	  return buffer;
-	};
-
-	SerializedObject.sort_typedef = function (typedef) {
-	  assert(Array.isArray(typedef));
-
-	  function sort_field_compare(a, b) {
-	    // Sort by type id first, then by field id
-	    return a[3] !== b[3] ? stypes[a[3]].id - stypes[b[3]].id : a[2] - b[2];
-	  };
-
-	  return typedef.sort(sort_field_compare);
-	};
-
-	SerializedObject.lookup_type_tx = function (id) {
-	  assert(typeof id === 'number');
-	  return TRANSACTION_TYPES[id];
-	};
-
-	exports.SerializedObject = SerializedObject;
-	
-	/* WEBPACK VAR INJECTION */}(require, require(22).Buffer))
-
-/***/ },
-
-/***/ 9:
-/***/ function(module, exports, require) {
-
-	var REQUIRED = exports.REQUIRED = 0,
-	    OPTIONAL = exports.OPTIONAL = 1,
-	    DEFAULT  = exports.DEFAULT  = 2;
-
-	var base = [
-	  [ 'TransactionType'    , REQUIRED,  2, "Int16" ],
-	  [ 'Flags'              , OPTIONAL,  2, "Int32" ],
-	  [ 'SourceTag'          , OPTIONAL,  3, "Int32" ],
-	  [ 'Account'            , REQUIRED,  1, "Account" ],
-	  [ 'Sequence'           , REQUIRED,  4, "Int32" ],
-	  [ 'Fee'                , REQUIRED,  8, "Amount" ],
-	  [ 'OperationLimit'     , OPTIONAL, 29, "Int32" ],
-	  [ 'SigningPubKey'      , REQUIRED,  3, "VariableLength" ],
-	  [ 'TxnSignature'       , OPTIONAL,  4, "VariableLength" ]
-	];
-
-	exports.tx = {
-	  AccountSet: [3].concat(base, [
-	    [ 'EmailHash'          , OPTIONAL,  1, "Hash128" ],
-	    [ 'WalletLocator'      , OPTIONAL,  7, "Hash256" ],
-	    [ 'WalletSize'         , OPTIONAL, 12, "Int32" ],
-	    [ 'MessageKey'         , OPTIONAL,  2, "VariableLength" ],
-	    [ 'Domain'             , OPTIONAL,  7, "VariableLength" ],
-	    [ 'TransferRate'       , OPTIONAL, 11, "Int32" ]
-	  ]),
-	  TrustSet: [20].concat(base, [
-	    [ 'LimitAmount'        , OPTIONAL,  3, "Amount" ],
-	    [ 'QualityIn'          , OPTIONAL, 20, "Int32" ],
-	    [ 'QualityOut'         , OPTIONAL, 21, "Int32" ]
-	  ]),
-	  OfferCreate: [7].concat(base, [
-	    [ 'TakerPays'          , REQUIRED,  4, "Amount" ],
-	    [ 'TakerGets'          , REQUIRED,  5, "Amount" ],
-	    [ 'Expiration'         , OPTIONAL, 10, "Int32" ]
-	  ]),
-	  OfferCancel: [8].concat(base, [
-	    [ 'OfferSequence'      , REQUIRED, 25, "Int32" ]
-	  ]),
-	  SetRegularKey: [5].concat(base, [
-	    [ 'RegularKey'         , REQUIRED,  8, "Account" ]
-	  ]),
-	  Payment: [0].concat(base, [
-	    [ 'Destination'        , REQUIRED,  3, "Account" ],
-	    [ 'Amount'             , REQUIRED,  1, "Amount" ],
-	    [ 'SendMax'            , OPTIONAL,  9, "Amount" ],
-	    [ 'Paths'              , DEFAULT ,  1, "PathSet" ],
-	    [ 'InvoiceID'          , OPTIONAL, 17, "Hash256" ],
-	    [ 'DestinationTag'     , OPTIONAL, 14, "Int32" ]
-	  ]),
-	  Contract: [9].concat(base, [
-	    [ 'Expiration'         , REQUIRED, 10, "Int32" ],
-	    [ 'BondAmount'         , REQUIRED, 23, "Int32" ],
-	    [ 'StampEscrow'        , REQUIRED, 22, "Int32" ],
-	    [ 'RippleEscrow'       , REQUIRED, 17, "Amount" ],
-	    [ 'CreateCode'         , OPTIONAL, 11, "VariableLength" ],
-	    [ 'FundCode'           , OPTIONAL,  8, "VariableLength" ],
-	    [ 'RemoveCode'         , OPTIONAL,  9, "VariableLength" ],
-	    [ 'ExpireCode'         , OPTIONAL, 10, "VariableLength" ]
-	  ]),
-	  RemoveContract: [10].concat(base, [
-	    [ 'Target'             , REQUIRED,  7, "Account" ]
-	  ]),
-	  EnableFeature: [100].concat(base, [
-	    [ 'Feature'            , REQUIRED, 19, "Hash256" ]
-	  ]),
-	  SetFee: [101].concat(base, [
-	    [ 'Features'           , REQUIRED,  9, "Array" ],
-	    [ 'BaseFee'            , REQUIRED,  5, "Int64" ],
-	    [ 'ReferenceFeeUnits'  , REQUIRED, 30, "Int32" ],
-	    [ 'ReserveBase'        , REQUIRED, 31, "Int32" ],
-	    [ 'ReserveIncrement'   , REQUIRED, 32, "Int32" ]
-	  ])
-	};
-
-	exports.ledger = {
-	  AccountRoot: [97],
-	  Contract: [99],
-	  DirectoryNode: [100],
-	  Features: [102],
-	  GeneratorMap: [103],
-	  LedgerHashes: [104],
-	  Nickname: [110],
-	  Offer: [111],
-	  RippleState: [114],
-	  FeeSettings: [115]
-	};
-
-	exports.metadata = [
-	  [ 'TransactionIndex'     , REQUIRED, 28, "Int32" ],
-	  [ 'TransactionResult'    , REQUIRED,  3, "Int8" ],
-	  [ 'AffectedNodes'        , REQUIRED,  8, "Array" ]
-	];
-
-	exports.ter = {
-	  tesSUCCESS: 0,
-	  tecCLAIM: 100,
-	  tecPATH_PARTIAL: 101,
-	  tecUNFUNDED_ADD: 102,
-	  tecUNFUNDED_OFFER: 103,
-	  tecUNFUNDED_PAYMENT: 104,
-	  tecFAILED_PROCESSING: 105,
-	  tecDIR_FULL: 121,
-	  tecINSUF_RESERVE_LINE: 122,
-	  tecINSUF_RESERVE_OFFER: 123,
-	  tecNO_DST: 124,
-	  tecNO_DST_INSUF_XRP: 125,
-	  tecNO_LINE_INSUF_RESERVE: 126,
-	  tecNO_LINE_REDUNDANT: 127,
-	  tecPATH_DRY: 128,
-	  tecUNFUNDED: 129,
-	  tecMASTER_DISABLED: 130,
-	  tecNO_REGULAR_KEY: 131,
-	  tecOWNERS: 132
-	};
-
-
-/***/ },
-
-/***/ 10:
-/***/ function(module, exports, require) {
-
-	var util   = require(26);
-	var extend = require(41);
-
-	function RippleError(code, message) {
-	  switch (typeof code) {
-	    case 'object':
-	      extend(this, code);
-	      break;
-	    case 'string':
-	      this.result         = code;
-	      this.result_message = message;
-	      break;
-	  }
-
-	  this.engine_result = this.result = (this.result || this.engine_result || this.error || 'Error');
-	  this.engine_result_message = this.result_message = (this.result_message || this.engine_result_message || this.error_message || 'Error');
-	  this.result_message = this.message = (this.result_message);
-
-	  var stack;
-	  if (!!Error.captureStackTrace)
-	    Error.captureStackTrace(this, code || this);
-	  else if (stack = new Error().stack)
-	    this.stack = stack;
-	}
-
-	util.inherits(RippleError, Error);
-
-	RippleError.prototype.name = 'RippleError';
-
-	exports.RippleError = RippleError;
-
-
-/***/ },
-
-/***/ 11:
-/***/ function(module, exports, require) {
-
-	var exports = module.exports = require(23);
-
-	// We override this function for browsers, because they print objects nicer
-	// natively than JSON.stringify can.
-	exports.logObject = function (msg, obj) {
-	  if (/MSIE/.test(navigator.userAgent)) {
-	    console.log(msg, JSON.stringify(obj));
-	  } else {
-	    console.log(msg, "", obj);
-	  }
-	};
-
-
-/***/ },
-
-/***/ 12:
-/***/ function(module, exports, require) {
-
-	var util         = require(26);
-	var utils        = require(11);
-	var EventEmitter = require(25).EventEmitter;
-
-	/**
-	 *  @constructor Server
-	 *  @param {Remote} Reference to a Remote object
-	 *  @param {Object} Options
-	 *
-	 *    host:   String
-	 *    port:   String or Number
-	 *    secure: Boolean
-	 */
-
-	function Server(remote, opts) {
-	  EventEmitter.call(this);
-
-	  if (typeof opts !== 'object') {
-	    throw new Error('Invalid server configuration.');
-	  }
-
-	  var self = this;
-
-	  this._remote         = remote;
-	  this._opts           = opts;
-	  this._host           = opts.host;
-	  this._port           = opts.port;
-	  this._secure         = typeof opts.secure === 'boolean' ? opts.secure : true;
-	  this._ws             = void(0);
-	  this._connected      = false;
-	  this._shouldConnect = false;
-	  this._state          = void(0);
-	  this._id             = 0;
-	  this._retry          = 0;
-	  this._requests       = { };
-
-	  this._opts.url = (opts.secure ? 'wss://' : 'ws://') + opts.host + ':' + opts.port;
-
-	  this.on('message', function(message) {
-	    self._handleMessage(message);
-	  });
-
-	  this.on('response_subscribe', function(message) {
-	    self._handleResponseSubscribe(message);
-	  });
-
-	  function checkServerActivity() {
-	    if (isNaN(self._lastLedgerClose)) return;
-
-	    var delta = Date.now() - self._lastLedgerClose;
-
-	    if (delta > (1000 * 20)) {
-	      self.reconnect();
-	    }
-	  };
-
-	  this.once('ledger_closed', function() {
-	    //setInterval(checkServerActivity, 1000);
-	  });
-	};
-
-	util.inherits(Server, EventEmitter);
-
-
-	/** This is the final interface between client code and a socket connection to a
-	 * `rippled` server. As such, this is a decent hook point to allow a WebSocket
-	 * interface conforming object to be used as a basis to mock rippled. This
-	 * avoids the need to bind a websocket server to a port and allows a more
-	 * synchronous style of code to represent a client <-> server message sequence.
-	 * We can also use this to log a message sequence to a buffer.
-	 *
-	 * @api private
-	 */
-
-	Server.websocketConstructor = function() {
-	  // We require this late, because websocket shims may be loaded after
-	  // ripple-lib in the browser
-	  return require(24);
-	};
-
-	/**
-	 * Server states that we will treat as the server being online.
-	 *
-	 * Our requirements are that the server can process transactions and notify
-	 * us of changes.
-	 */
-
-	Server.onlineStates = [
-	  'syncing',
-	  'tracking',
-	  'proposing',
-	  'validating',
-	  'full'
-	];
-
-	/**
-	 * Set server state
-	 *
-	 * @param {String} state
-	 */
-
-	Server.prototype._setState = function(state) {
-	  if (state !== this._state) {
-	    this._state = state;
-
-	    this.emit('state', state);
-
-	    switch (state) {
-	      case 'online':
-	        this._connected = true;
-	        this.emit('connect');
-	        break;
-	      case 'offline':
-	        this._connected = false;
-	        this.emit('disconnect');
-	        break;
-	    }
-	  }
-	};
-
-	/**
-	 * Get the remote address for a server.
-	 * Incompatible with ripple-lib client build
-	 */
-
-	Server.prototype._remoteAddress = function() {
-	  try { var address = this._ws._socket.remoteAddress; } catch (e) { }
-	  return address;
-	};
-
-
-	/**
-	 * Connect to rippled WebSocket server and subscribe to events that are
-	 * internally requisite. Automatically retry connections with a gradual
-	 * back-off
-	 *
-	 * @api public
-	 */
-
-	Server.prototype.connect = function() {
-	  var self = this;
-
-	  // We don't connect if we believe we're already connected. This means we have
-	  // recently received a message from the server and the WebSocket has not
-	  // reported any issues either. If we do fail to ping or the connection drops,
-	  // we will automatically reconnect.
-	  if (this._connected) return;
-
-	  this._remote._trace('server: connect: %s', this._opts.url);
-
-	  // Ensure any existing socket is given the command to close first.
-	  if (this._ws) this._ws.close();
-
-	  var WebSocket = Server.websocketConstructor();
-	  var ws = this._ws = new WebSocket(this._opts.url);
-
-	  this._shouldConnect = true;
-
-	  self.emit('connecting');
-
-	  ws.onopen = function() {
-	    // If we are no longer the active socket, simply ignore any event
-	    if (ws === self._ws) {
-	      self.emit('socket_open');
-	      // Subscribe to events
-	      self.request(self._remote._serverPrepareSubscribe());
-	    }
-	  };
-
-	  ws.onmessage = function onMessage(msg) {
-	    self.emit('message', msg.data);
-	  };
-
-	  ws.onerror = function(e) {
-	    // If we are no longer the active socket, simply ignore any event
-	    if (ws === self._ws) {
-	      self.emit('socket_error');
-	      self._remote._trace('server: onerror: %s', e.data || e);
-
-	      // Most connection errors for WebSockets are conveyed as 'close' events with
-	      // code 1006. This is done for security purposes and therefore unlikely to
-	      // ever change.
-
-	      // This means that this handler is hardly ever called in practice. If it is,
-	      // it probably means the server's WebSocket implementation is corrupt, or
-	      // the connection is somehow producing corrupt data.
-
-	      // Most WebSocket applications simply log and ignore this error. Once we
-	      // support for multiple servers, we may consider doing something like
-	      // lowering this server's quality score.
-
-	      // However, in Node.js this event may be triggered instead of the close
-	      // event, so we need to handle it.
-	      handleConnectionClose();
-	    }
-	  };
-
-	  // Failure to open.
-	  ws.onclose = function() {
-	    // If we are no longer the active socket, simply ignore any event
-	    if (ws === self._ws) {
-	      self._remote._trace('server: onclose: %s', ws.readyState);
-	      handleConnectionClose();
-	    }
-	  };
-
-	  function handleConnectionClose() {
-	    self.emit('socket_close');
-	    self._setState('offline');
-
-	    // Prevent additional events from this socket
-	    ws.onopen = ws.onerror = ws.onclose = ws.onmessage = function() {};
-
-	    // Should we be connected?
-	    if (!self._shouldConnect) return;
-
-	    // Delay and retry.
-	    self._retry += 1;
-
-	    var retryTimeout = (self._retry < 40)
-	        ? 1000 / 20            // First, for 2 seconds: 20 times per second
-	        : (self._retry < 40 + 60)
-	          ? 1000               // Then, for 1 minute: once per second
-	          : (self._retry < 40 + 60 + 60)
-	            ? (10 * 1000)      // Then, for 10 minutes: once every 10 seconds
-	            : (30 * 1000);     // Then: once every 30 seconds
-
-
-	    function connectionRetry() {
-	      if (self._shouldConnect) {
-	        self._remote._trace('server: retry');
-	        self.connect();
-	      }
-	    };
-
-	    self._retry_timer = setTimeout(connectionRetry, retryTimeout);
-	  };
-	};
-
-	/**
-	 * Disconnect from rippled WebSocket server
-	 *
-	 * @api public
-	 */
-
-	Server.prototype.disconnect = function() {
-	  this._shouldConnect = false;
-	  this._setState('offline');
-	  if (this._ws) this._ws.close();
-	};
-
-	/**
-	 * Reconnect to rippled WebSocket server
-	 */
-
-	Server.prototype.reconnect = function() {
-	  if (this._ws) {
-	    this.once('disconnect', this.connect.bind(this));
-	    this.disconnect();
-	  }
-	};
-
-	/**
-	 * Submit a Request object.
-	 *
-	 * Requests are indexed by message ID, which is repeated
-	 * in the response from rippled WebSocket server
-	 *
-	 * @param {Request} request
-	 * @api public
-	 */
-
-	Server.prototype.request = function(request) {
-	  var self  = this;
-
-	  // Only bother if we are still connected.
-	  if (!this._ws) {
-	    this._remote._trace('server: request: DROPPING: %s', request.message);
-	    return;
-	  }
-
-	  request.server = this;
-	  request.message.id = this._id;
-
-	  this._requests[request.message.id] = request;
-
-	  // Advance message ID
-	  this._id++;
-
-	  var is_connected = this._connected || (request.message.command === 'subscribe' && this._ws.readyState === 1);
-
-	  if (is_connected) {
-	    this.sendMessage(request.message);
-	  } else {
-	    // XXX There are many ways to make this smarter.
-	    function serverReconnected() {
-	      self.sendMessage(request.message);
-	    }
-	    this.once('connect', serverReconnected);
-	  }
-	};
-
-	/**
-	 * Send JSON message to rippled WebSocket server
-	 *
-	 * @param {JSON-Stringifiable} message
-	 */
-
-	Server.prototype.sendMessage = function(message) {
-	  if (this._ws) {
-	    this._remote._trace('server: request: %s', message);
-	    this.emit('before_send_message', message)
-	    this._ws.send(JSON.stringify(message));
-	  }
-	};
-
-	/**
-	 * Handle incoming messages from rippled WebSocket server
-	 *
-	 * @param {JSON-parseable} message
-	 * @api private
-	 */
-
-	Server.prototype._handleMessage = function(message) {
-	  var self = this;
-
-	  try { message = JSON.parse(message); } catch(e) { }
-
-	  var isValid = message && (typeof message === 'object') && (typeof message.type === 'string');
-
-	  if (!isValid) return;
-
-	  this.emit('before_receive_message', message)
-
-	  switch (message.type) {
-	    case 'server_status':
-	      // This message is only received when online.
-	      // As we are connected, it is the definitive final state.
-	      this._setState(~(Server._onlineStates.indexOf(message.server_status)) ? 'online' : 'offline');
-	      break;
-
-	    case 'ledgerClosed':
-	      this._lastLedgerClose = Date.now();
-	      this.emit('ledger_closed', message);
-	      break;
-
-	    case 'path_find':
-	      this._remote._trace('server: path_find: %s', message);
-	      break;
-
-	    case 'response':
-	      // A response to a request.
-	      var request = self._requests[message.id];
-	      delete self._requests[message.id];
-
-	      if (!request) {
-	        this._remote._trace('server: UNEXPECTED: %s', message);
-	      } else if (message.status === 'success') {
-	        this._remote._trace('server: response: %s', message);
-
-	        request.emit('success', message.result);
-
-	        [ self, self._remote ].forEach(function(emitter) {
-	          emitter.emit('response_' + request.message.command, message.result, request, message);
-	        });
-	      } else if (message.error) {
-	        this._remote._trace('server: error: %s', message);
-
-	        request.emit('error', {
-	          error         : 'remoteError',
-	          error_message : 'Remote reported an error.',
-	          remote        : message
-	        });
-	      }
-	      break;
-	  }
-	};
-
-	/**
-	 * Handle subscription response messages. Subscription response
-	 * messages indicate that a connection to the server is ready
-	 */
-
-	Server.prototype._handleResponseSubscribe = function(message) {
-	  if (~(Server.onlineStates.indexOf(message.server_status))) {
-	    this._setState('online');
-	  }
-	};
-
-	exports.Server = Server;
-
-	// vim:sw=2:sts=2:ts=8:et
-
-
-/***/ },
-
-/***/ 13:
-/***/ function(module, exports, require) {
-
-	// This object serves as a singleton to store config options
-
-	var extend = require(41);
-
-	var config = module.exports = {
-	  load: function (newOpts) {
-	    extend(config, newOpts);
-	    return config;
-	  }
-	};
-
-
-/***/ },
-
-/***/ 14:
+/***/ 16:
 /***/ function(module, exports, require) {
 
 	var sjcl    = require(11).sjcl;
 	var utils   = require(11);
 	var config  = require(13);
-	var extend  = require(41);
+	var extend  = require(36);
 
 	var BigInteger = utils.jsbn.BigInteger;
 
-	var UInt = require(28).UInt;
-	var Base = require(5).Base;
+	var UInt = require(31).UInt;
+	var Base = require(6).Base;
 
 	//
 	// UInt160 support
@@ -5121,258 +5854,7 @@ var ripple =
 
 /***/ },
 
-/***/ 15:
-/***/ function(module, exports, require) {
-
-	// Routines for working with an account.
-	//
-	// You should not instantiate this class yourself, instead use Remote#account.
-	//
-	// Events:
-	//   wallet_clean :  True, iff the wallet has been updated.
-	//   wallet_dirty :  True, iff the wallet needs to be updated.
-	//   balance:        The current stamp balance.
-	//   balance_proposed
-	//
-
-	// var network = require("./network.js");
-
-	var EventEmitter       = require(25).EventEmitter;
-	var util               = require(26);
-	var extend             = require(41);
-
-	var Amount             = require(3).Amount;
-	var UInt160            = require(14).UInt160;
-	var TransactionManager = require(29).TransactionManager;
-
-	/**
-	 * @constructor Account
-	 * @param {Remote} remote
-	 * @param {String} account
-	 */
-
-	function Account(remote, account) {
-	  EventEmitter.call(this);
-
-	  var self = this;
-
-	  this._remote     = remote;
-	  this._account    = UInt160.from_json(account);
-	  this._account_id = this._account.to_json();
-	  this._subs       = 0;
-
-	  // Ledger entry object
-	  // Important: This must never be overwritten, only extend()-ed
-	  this._entry = { };
-
-	  function listenerAdded(type, listener) {
-	    if (~Account.subscribeEvents.indexOf(type)) {
-	      if (!self._subs && self._remote._connected) {
-	        self._remote.request_subscribe()
-	        .add_account(self._account_id)
-	        .broadcast();
-	      }
-	      self._subs += 1;
-	    }
-	  };
-
-	  this.on('newListener', listenerAdded);
-
-	  function listenerRemoved(type, listener) {
-	    if (~Account.subscribeEvents.indexOf(type)) {
-	      self._subs -= 1;
-	      if (!self._subs && self._remote._connected) {
-	        self._remote.request_unsubscribe()
-	        .add_account(self._account_id)
-	        .broadcast();
-	      }
-	    }
-	  };
-
-	  this.on('removeListener', listenerRemoved);
-
-	  function attachAccount(request) {
-	    if (self._account.is_valid() && self._subs) {
-	      request.add_account(self._account_id);
-	    }
-	  };
-
-	  this._remote.on('prepare_subscribe', attachAccount);
-
-	  function handleTransaction(transaction) {
-	    var changed = false;
-
-	    transaction.mmeta.each(function(an) {
-	      var isAccount = an.fields.Account === self._account_id;
-	      var isAccountRoot = isAccount && (an.entryType === 'AccountRoot');
-
-	      if (isAccountRoot) {
-	        extend(self._entry, an.fieldsNew, an.fieldsFinal);
-	        changed = true;
-	      }
-	    });
-
-	    if (changed) {
-	      self.emit('entry', self._entry);
-	    }
-	  };
-
-	  this.on('transaction', handleTransaction);
-
-	  this._transactionManager = new TransactionManager(this);
-
-	  return this;
-	};
-
-	util.inherits(Account, EventEmitter);
-
-	/**
-	 * List of events that require a remote subscription to the account.
-	 */
-
-	Account.subscribeEvents = [ 'transaction', 'entry' ];
-
-	Account.prototype.to_json = function () {
-	  return this._account.to_json();
-	};
-
-	/**
-	 * Whether the AccountId is valid.
-	 *
-	 * Note: This does not tell you whether the account exists in the ledger.
-	 */
-
-	Account.prototype.is_valid = function () {
-	  return this._account.is_valid();
-	};
-
-	/**
-	 * Request account info
-	 *
-	 * @param {Function} callback
-	 */
-
-	Account.prototype.getInfo = function(callback) {
-	  return this._remote.request_account_info(this._account_id, callback);
-	};
-
-	/**
-	 * Retrieve the current AccountRoot entry.
-	 *
-	 * To keep up-to-date with changes to the AccountRoot entry, subscribe to the
-	 * "entry" event.
-	 *
-	 * @param {Function} callback
-	 */
-
-	Account.prototype.entry = function (callback) {
-	  var self = this;
-	  var callback = typeof callback === 'function' ? callback : function(){};
-
-	  function accountInfo(err, info) {
-	    if (err) {
-	      callback(err);
-	    } else {
-	      extend(self._entry, info.account_data);
-	      self.emit('entry', self._entry);
-	      callback(null, info);
-	    }
-	  };
-
-	  this.getInfo(accountInfo);
-
-	  return this;
-	};
-
-	Account.prototype.getNextSequence = function(callback) {
-	  var callback = typeof callback === 'function' ? callback : function(){};
-
-	  function accountInfo(err, info) {
-	    if (err) {
-	      callback(err);
-	    } else {
-	      callback(null, info.account_data.Sequence);
-	    }
-	  };
-
-	  this.getInfo(accountInfo);
-
-	  return this;
-	};
-
-	/**
-	 * Retrieve this account's Ripple trust lines.
-	 *
-	 * To keep up-to-date with changes to the AccountRoot entry, subscribe to the
-	 * "lines" event. (Not yet implemented.)
-	 *
-	 * @param {function (err, lines)} callback Called with the result
-	 */
-
-	Account.prototype.lines = function (callback) {
-	  var self = this;
-	  var callback = typeof callback === 'function' ? callback : function(){};
-
-	  function accountLines(err, res) {
-	    if (err) {
-	      callback(err);
-	    } else {
-	      self._lines = res.lines;
-	      self.emit('lines', self._lines);
-	      callback(null, res);
-	    }
-	  }
-
-	  this._remote.requestAccountLines(this._account_id, accountLines);
-
-	  return this;
-	};
-
-	/**
-	 * Notify object of a relevant transaction.
-	 *
-	 * This is only meant to be called by the Remote class. You should never have to
-	 * call this yourself.
-	 *
-	 * @param {Object} message
-	 */
-
-	Account.prototype.notify =
-	Account.prototype.notifyTx = function (transaction) {
-	  // Only trigger the event if the account object is actually
-	  // subscribed - this prevents some weird phantom events from
-	  // occurring.
-	  if (this._subs) {
-	    this.emit('transaction', transaction);
-	    var account = transaction.transaction.Account;
-	    if (!account) return;
-	    if (account === this._account_id) {
-	      this.emit('transaction-outbound', transaction);
-	    } else {
-	      this.emit('transaction-inbound', transaction);
-	    }
-	  }
-	};
-
-	/**
-	 * Submit a transaction to an account's
-	 * transaction manager
-	 *
-	 * @param {Transaction} transaction
-	 */
-
-	Account.prototype.submit = function(transaction) {
-	  this._transactionManager.submit(transaction);
-	};
-
-	exports.Account = Account;
-
-	// vim:sw=2:sts=2:ts=8:et
-
-
-/***/ },
-
-/***/ 16:
+/***/ 17:
 /***/ function(module, exports, require) {
 
 	// Routines for working with an orderbook.
@@ -5385,12 +5867,12 @@ var ripple =
 
 	// var network = require("./network.js");
 
-	var EventEmitter = require(25).EventEmitter;
-	var util         = require(26);
-	var extend       = require(41);
-	var Amount       = require(3).Amount;
-	var UInt160      = require(14).UInt160;
-	var Currency     = require(4).Currency;
+	var EventEmitter = require(28).EventEmitter;
+	var util         = require(25);
+	var extend       = require(36);
+	var Amount       = require(14).Amount;
+	var UInt160      = require(16).UInt160;
+	var Currency     = require(5).Currency;
 
 	function OrderBook(remote, currency_gets, issuer_gets, currency_pays, issuer_pays) {
 	  EventEmitter.call(this);
@@ -5411,18 +5893,22 @@ var ripple =
 	  // Offers
 	  this._offers       = [ ];
 
-	  this.on('newListener', function (type, listener) {
+	  function listenerAdded(type, listener) {
 	    if (~OrderBook.subscribe_events.indexOf(type)) {
 	      if (!self._subs && self._remote._connected) {
+	        self._subs += 1;
 	        self._subscribe();
+	      } else {
+	        self._subs += 1;
 	      }
-	      self._subs += 1;
 	    }
-	  });
+	  };
 
-	  this.on('removeListener', function (type, listener) {
+	  this.on('newListener', listenerAdded);
+
+	  function listenerRemoved(type, listener) {
 	    if (~OrderBook.subscribe_events.indexOf(type)) {
-	      self._subs  -= 1;
+	      self._subs -= 1;
 	      if (!self._subs && self._remote._connected) {
 	        self._sync = false;
 	        self._remote.request_unsubscribe()
@@ -5430,17 +5916,16 @@ var ripple =
 	        .request();
 	      }
 	    }
-	  });
+	  };
 
-	  this._remote.on('connect', function () {
-	    if (self._subs) {
-	      self._subscribe();
-	    }
-	  });
+	  // ST: This *should* call _prepareSubscribe.
+	  this._remote.on('prepare_subscribe', this._subscribe.bind(this));
 
-	  this._remote.on('disconnect', function () {
+	  function remoteDisconnected() {
 	    self._sync = false;
-	  });
+	  };
+
+	  this._remote.on('disconnect', remoteDisconnected);
 
 	  return this;
 	};
@@ -5459,18 +5944,42 @@ var ripple =
 	 */
 	OrderBook.prototype._subscribe = function () {
 	  var self = this;
-	  var request = self._remote.request_subscribe();
-	  request.books([ self.to_json() ], true);
-	  request.callback(function(err, res) {
-	    if (err) {
-	      // XXX What now?
-	    } else {
+	  if (self.is_valid() && self._subs) {
+	    var request = this._remote.request_subscribe();
+	    request.addBook(self.to_json(), true);
+	    request.once('success', function(res) {
 	      self._sync   = true;
 	      self._offers = res.offers;
 	      self.emit('model', self._offers);
-	    }
-	  });
+	    });
+	    request.once('error', function(err) {
+	      // XXX What now?
+	    });
+	    request.request();
+	  }
 	};
+
+	/**
+	 * Adds this orderbook to a subscription request.
+
+	// ST: Currently this is not working because the server cannot give snapshots
+	//     for more than one order book in the same subscribe message.
+
+	OrderBook.prototype._prepareSubscribe = function (request) {
+	  var self = this;
+	  if (self.is_valid() && self._subs) {
+	    request.addBook(self.to_json(), true);
+	    request.once('success', function(res) {
+	      self._sync   = true;
+	      self._offers = res.offers;
+	      self.emit('model', self._offers);
+	    });
+	    request.once('error', function(err) {
+	      // XXX What now?
+	    });
+	  }
+	};
+	 */
 
 	OrderBook.prototype.to_json = function () {
 	  var json = {
@@ -5515,7 +6024,7 @@ var ripple =
 	  + ((this['_currency_' + type] === 'XRP') ? '' : '/'
 	     + this['_currency_' + type ] + '/'
 	     + this['_issuer_' + type]);
-	     return Amount.from_json(tradeStr);
+	  return Amount.from_json(tradeStr);
 	};
 
 	/**
@@ -5524,14 +6033,13 @@ var ripple =
 	 * This is only meant to be called by the Remote class. You should never have to
 	 * call this yourself.
 	 */
-	OrderBook.prototype.notify =
-	  OrderBook.prototype.notifyTx = function (message) {
+	OrderBook.prototype.notify = function (message) {
 	  var self       = this;
 	  var changed    = false;
 	  var trade_gets = this.trade('gets');
 	  var trade_pays = this.trade('pays');
 
-	  message.mmeta.each(function (an) {
+	  function handleTransaction(an) {
 	    if (an.entryType !== 'Offer') return;
 
 	    var i, l, offer;
@@ -5583,17 +6091,25 @@ var ripple =
 	        }
 	        break;
 	    }
-	  });
+	  };
+
+	  message.mmeta.each(handleTransaction);
 
 	  // Only trigger the event if the account object is actually
 	  // subscribed - this prevents some weird phantom events from
 	  // occurring.
 	  if (this._subs) {
 	    this.emit('transaction', message);
-	    if (changed) this.emit('model', this._offers);
-	    if (!trade_gets.is_zero()) this.emit('trade', trade_pays, trade_gets);
+	    if (changed) {
+	      this.emit('model', this._offers);
+	    }
+	    if (!trade_gets.is_zero()) {
+	      this.emit('trade', trade_pays, trade_gets);
+	    }
 	  }
 	};
+
+	OrderBook.prototype.notifyTx = OrderBook.prototype.notify;
 
 	/**
 	 * Get offers model asynchronously.
@@ -5632,13 +6148,13 @@ var ripple =
 
 /***/ },
 
-/***/ 17:
+/***/ 18:
 /***/ function(module, exports, require) {
 
-	var EventEmitter = require(25).EventEmitter;
-	var util         = require(26);
-	var Amount       = require(3).Amount;
-	var extend       = require(41);
+	var EventEmitter = require(28).EventEmitter;
+	var util         = require(25);
+	var Amount       = require(14).Amount;
+	var extend       = require(36);
 
 	/**
 	 * Represents a persistent path finding request.
@@ -5725,155 +6241,525 @@ var ripple =
 
 /***/ },
 
-/***/ 18:
-/***/ function(module, exports, require) {
-
-	//
-	// Seed support
-	//
-
-	var utils   = require(11);
-	var sjcl    = utils.sjcl;
-	var extend  = require(41);
-
-	var BigInteger = utils.jsbn.BigInteger;
-
-	var Base    = require(5).Base;
-	var UInt    = require(28).UInt;
-	var UInt256 = require(21).UInt256;
-	var KeyPair = require(31).KeyPair;
-
-	var Seed = extend(function () {
-	  // Internal form: NaN or BigInteger
-	  this._curve = sjcl.ecc.curves['c256'];
-	  this._value = NaN;
-	}, UInt);
-
-	Seed.width = 16;
-	Seed.prototype = extend({}, UInt.prototype);
-	Seed.prototype.constructor = Seed;
-
-	// value = NaN on error.
-	// One day this will support rfc1751 too.
-	Seed.prototype.parse_json = function (j) {
-	  if (typeof j === 'string') {
-	    if (!j.length) {
-	      this._value = NaN;
-	    // XXX Should actually always try and continue if it failed.
-	    } else if (j[0] === "s") {
-	      this._value = Base.decode_check(Base.VER_FAMILY_SEED, j);
-	    } else if (j.length === 32) {
-	      this._value = this.parse_hex(j);
-	    // XXX Should also try 1751
-	    } else {
-	      this.parse_passphrase(j);
-	    }
-	  } else {
-	    this._value = NaN;
-	  }
-
-	  return this;
-	};
-
-	Seed.prototype.parse_passphrase = function (j) {
-	  if (typeof j !== 'string') {
-	    throw new Error("Passphrase must be a string");
-	  }
-
-	  var hash = sjcl.hash.sha512.hash(sjcl.codec.utf8String.toBits(j));
-	  var bits = sjcl.bitArray.bitSlice(hash, 0, 128);
-
-	  this.parse_bits(bits);
-
-	  return this;
-	};
-
-	Seed.prototype.to_json = function () {
-	  if (!(this._value instanceof BigInteger)) {
-	    return NaN;
-	  }
-
-	  var output = Base.encode_check(Base.VER_FAMILY_SEED, this.to_bytes());
-
-	  return output;
-	};
-
-	function append_int(a, i) {
-	  return [].concat(a, i >> 24, (i >> 16) & 0xff, (i >> 8) & 0xff, i & 0xff);
-	};
-
-	function firstHalfOfSHA512(bytes) {
-	  return sjcl.bitArray.bitSlice(
-	    sjcl.hash.sha512.hash(sjcl.codec.bytes.toBits(bytes)),
-	    0, 256
-	  );
-	};
-
-	function SHA256_RIPEMD160(bits) {
-	  return sjcl.hash.ripemd160.hash(sjcl.hash.sha256.hash(bits));
-	};
-
-	Seed.prototype.get_key = function (account_id) {
-	  if (!this.is_valid()) {
-	    throw new Error("Cannot generate keys from invalid seed!");
-	  }
-	  // XXX Should loop over keys until we find the right one
-
-	  var private_gen, public_gen;
-	  var curve = this._curve;
-	  var seq = 0, i = 0;
-
-	  do {
-	    private_gen = sjcl.bn.fromBits(firstHalfOfSHA512(append_int(this.to_bytes(), i)));
-	    i++;
-	  } while (!curve.r.greaterEquals(private_gen));
-
-	  public_gen = curve.G.mult(private_gen);
-
-	  var sec;
-	  i = 0;
-
-	  do {
-	    sec = sjcl.bn.fromBits(firstHalfOfSHA512(append_int(append_int(public_gen.toBytesCompressed(), seq), i)));
-	    i++;
-	  } while (!curve.r.greaterEquals(sec));
-
-	  sec = sec.add(private_gen).mod(curve.r);
-
-	  return KeyPair.from_bn_secret(sec);
-	};
-
-	exports.Seed = Seed;
-
-
-/***/ },
-
 /***/ 19:
 /***/ function(module, exports, require) {
 
+	var util         = require(25);
+	var EventEmitter = require(28).EventEmitter;
+	var Transaction  = require(4).Transaction;
+	var RippleError  = require(9).RippleError;
+	var PendingQueue = require(32).TransactionQueue;
+
 	/**
-	 * Prefix for hashing functions.
-	 *
-	 * These prefixes are inserted before the source material used to
-	 * generate various hashes. This is done to put each hash in its own
-	 * "space." This way, two different types of objects with the
-	 * same binary data will produce different hashes.
-	 *
-	 * Each prefix is a 4-byte value with the last byte set to zero
-	 * and the first three bytes formed from the ASCII equivalent of
-	 * some arbitrary string. For example "TXN".
+	 * @constructor TransactionManager
+	 * @param {Account} account
 	 */
 
-	// transaction plus signature to give transaction ID
-	exports.HASH_TX_ID           = 0x54584E00; // 'TXN'
-	// transaction plus metadata
-	exports.HASH_TX_NODE         = 0x534E4400; // 'TND'
-	// inner node in tree
-	exports.HASH_INNER_NODE      = 0x4D494E00; // 'MIN'
-	// inner transaction to sign
-	exports.HASH_TX_SIGN         = 0x53545800; // 'STX'
-	// inner transaction to sign (TESTNET)
-	exports.HASH_TX_SIGN_TESTNET = 0x73747800; // 'stx'
+	function TransactionManager(account) {
+	  EventEmitter.call(this);
+
+	  var self = this;
+
+	  this._account           = account;
+	  this._accountID         = account._account_id;
+	  this._remote            = account._remote;
+	  this._pending           = new PendingQueue;
+	  this._nextSequence      = void(0);
+	  this._cache             = { };
+	  // ND: Do we ever clean this up?
+	  this._sequenceCache     = { };
+	  this._maxFee            = this._remote.max_fee;
+	  this._submissionTimeout = this._remote._submission_timeout;
+
+	  // Query remote server for next account
+	  // transaction sequence number
+	  this._loadSequence();
+
+	  function transactionReceived(res) {
+	    var transaction = TransactionManager.normalizeTransaction(res);
+	    var sequence    = transaction.transaction.Sequence;
+	    var hash        = transaction.transaction.hash;
+
+	    if (!transaction.validated) return;
+
+	    self._sequenceCache[sequence] = transaction;
+
+	    // ND: we need to check against all submissions IDs
+	    var pending = self._pending.getBySubmissions(hash);
+
+	    self._remote._trace('transactionmanager: transaction_received:', transaction.transaction);
+
+	    if (pending) {
+	      // ND: A `success` handler will `finalize` this later
+	      pending.emit('success', transaction);
+	    } else {
+	      self._cache[hash] = transaction;
+	    }
+	  };
+
+	  this._account.on('transaction-outbound', transactionReceived);
+
+	  function adjustFees(loadData, server) {
+	    // ND: note, that `Fee` is a component of a transactionID
+	    self._pending.forEach(function(pending) {
+	      var shouldAdjust = pending._server === server
+	      && self._remote.local_fee && pending.tx_json.Fee;
+
+	      if (shouldAdjust) {
+	        var oldFee = pending.tx_json.Fee;
+	        var newFee = server.computeFee(pending);
+
+	        pending.tx_json.Fee = newFee;
+	        pending.emit('fee_adjusted', oldFee, newFee);
+
+	        self._remote._trace('transactionmanager: adjusting_fees:', pending.tx_json, oldFee, newFee);
+	      }
+	    });
+	  };
+
+	  this._remote.on('load_changed', adjustFees);
+
+	  function updatePendingStatus(ledger) {
+	    self._pending.forEach(function(pending) {
+	      pending.lastLedger = ledger;
+	      switch (ledger.ledger_index - pending.submitIndex) {
+	        case 8:
+	          pending.emit('lost', ledger);
+	          pending.emit('error', new RippleError('tejLost', 'Transaction lost'));
+	          self._remote._trace('transactionmanager: update_pending:', pending.tx_json);
+	          break;
+
+	        case 4:
+	          pending.set_state('client_missing');
+	          pending.emit('missing', ledger);
+	          break;
+	      }
+	    });
+	  };
+
+	  this._remote.on('ledger_closed', updatePendingStatus);
+
+	  function remoteReconnected() {
+	    //Load account transaction history
+	    var options = {
+	      account: self._accountID,
+	      ledger_index_min: -1,
+	      ledger_index_max: -1,
+	      limit: 10
+	    }
+
+	    self._remote.requestAccountTx(options, function(err, transactions) {
+	      if (!err && transactions.transactions) {
+	        transactions.transactions.forEach(transactionReceived);
+	      }
+
+	      self._remote.on('ledger_closed', updatePendingStatus);
+
+	      //Load next transaction sequence
+	      self._loadSequence(function sequenceLoaded() {
+	        self._resubmit();
+	      });
+	    });
+
+	    self.emit('reconnect');
+	  };
+
+	  function remoteDisconnected() {
+	    self._remote.once('connect', remoteReconnected);
+	    self._remote.removeListener('ledger_closed', updatePendingStatus);
+	  };
+
+	  this._remote.on('disconnect', remoteDisconnected);
+	};
+
+	util.inherits(TransactionManager, EventEmitter);
+
+	//Normalize transactions received from account
+	//transaction stream and account_tx
+	TransactionManager.normalizeTransaction = function(tx) {
+	  var transaction = tx;
+
+	  if (!tx.engine_result) {
+	    // account_tx
+	    transaction = {
+	      engine_result:          tx.meta.TransactionResult,
+	      transaction:            tx.tx,
+	      hash:                   tx.tx.hash,
+	      ledger_index:           tx.tx.ledger_index,
+	      meta:                   tx.meta,
+	      type:                   'transaction',
+	      validated:              true
+	    }
+	    transaction.result         = transaction.engine_result;
+	    transaction.result_message = transaction.engine_result_message;
+	  }
+
+	  transaction.metadata = transaction.meta;
+
+	  if (!transaction.tx_json) {
+	    transaction.tx_json = transaction.transaction;
+	  }
+
+	  return transaction;
+	};
+
+	//Fill an account transaction sequence
+	TransactionManager.prototype._fillSequence = function(tx, callback) {
+	  var self = this;
+
+	  function submitFill(sequence, callback) {
+	    var fill = self._remote.transaction();
+	    fill.account_set(self._accountID);
+	    fill.tx_json.Sequence = sequence;
+	    fill.once('submitted', callback);
+	    fill.submit();
+	  };
+
+	  function sequenceLoaded(err, sequence) {
+	    if (typeof sequence !== 'number') {
+	      callback(new Error('Failed to fetch account transaction sequence'));
+	      return;
+	    }
+
+	    var sequenceDif = tx.tx_json.Sequence - sequence;
+	    var submitted = 0;
+
+	    for (var i=sequence; i<tx.tx_json.Sequence; i++) {
+	      submitFill(i, function() {
+	        if (++submitted === sequenceDif) {
+	          callback();
+	        }
+	      });
+	    }
+	  };
+
+	  this._loadSequence(sequenceLoaded);
+	};
+
+	TransactionManager.prototype._loadSequence = function(callback) {
+	  var self = this;
+
+	  function sequenceLoaded(err, sequence) {
+	    if (typeof sequence === 'number') {
+	      self._nextSequence = sequence;
+	      self.emit('sequence_loaded', sequence);
+	      if (typeof callback === 'function') {
+	        callback(err, sequence);
+	      }
+	    } else {
+	      setTimeout(function() {
+	        self._loadSequence(callback);
+	      }, 1000 * 3);
+	    }
+	  };
+
+	  this._account.getNextSequence(sequenceLoaded);
+	};
+
+	TransactionManager.prototype._resubmit = function(ledgers, pending) {
+	  var self = this;
+	  var pending = pending ? [ pending ] : this._pending;
+	  var ledgers = Number(ledgers) || 0;
+
+	  function resubmitTransaction(pending) {
+	    if (!pending || pending.finalized) {
+	      // Transaction has been finalized, nothing to do
+	      return;
+	    }
+
+	    var hashCached = pending.findResultInCache(self._cache);
+	    self._remote._trace('transactionmanager: resubmit:', pending.tx_json);
+
+	    if (hashCached) {
+	      return pending.emit('success', hashCached);
+	    }
+
+	    while (self._sequenceCache[pending.tx_json.Sequence]) {
+	      //Sequence number has been consumed by another transaction
+	      self._remote._trace('transactionmanager: incrementing sequence:', pending.tx_json);
+	      pending.tx_json.Sequence += 1;
+	    }
+
+	    pending.once('submitted', function(m) {
+	      pending.emit('resubmitted', m);
+	      self._loadSequence();
+	    });
+
+	    self._request(pending);
+	  };
+
+	  function resubmitTransactions() {
+	    ;(function nextTransaction(i) {
+	      var transaction = pending[i];
+
+	      if (!(transaction instanceof Transaction)) return;
+
+	      resubmitTransaction(transaction);
+
+	      transaction.once('submitted', function() {
+	        if (++i < pending.length) {
+	          nextTransaction(i);
+	        }
+	      });
+	    })(0);
+	  };
+
+	  this._waitLedgers(ledgers, resubmitTransactions);
+	};
+
+	TransactionManager.prototype._selectServer = function() {
+	};
+
+	TransactionManager.prototype._waitLedgers = function(ledgers, callback) {
+	  if (ledgers < 1) {
+	    return callback();
+	  }
+
+	  var self = this;
+	  var closes = 0;
+
+	  function ledgerClosed() {
+	    if (++closes === ledgers) {
+	      callback();
+	      self._remote.removeListener('ledger_closed', ledgerClosed);
+	    }
+	  };
+
+	  this._remote.on('ledger_closed', ledgerClosed);
+	};
+
+	TransactionManager.prototype._request = function(tx) {
+	  var self   = this;
+	  var remote = this._remote;
+
+	  if (tx.attempts > 10) {
+	    tx.emit('error', new RippleError('tejAttemptsExceeded'));
+	    return;
+	  }
+
+	  var submitRequest = remote.requestSubmit();
+
+	  submitRequest.build_path(tx._build_path);
+
+	  if (remote.local_signing) {
+	    tx.sign();
+	    submitRequest.tx_blob(tx.serialize().to_hex());
+	  } else {
+	    submitRequest.secret(tx._secret);
+	    submitRequest.tx_json(tx.tx_json);
+	  }
+
+	  // ND: We could consider sharing the work with tx_blob when doing
+	  // local_signing
+	  tx.addSubmittedTxnID(tx.hash());
+
+	  remote._trace('transactionmanager: submit:', tx.tx_json);
+
+	  function transactionProposed(message) {
+	    tx.set_state('client_proposed');
+	    // If server is honest, don't expect a final if rejected.
+	    message.rejected = tx.isRejected(message.engine_result_code)
+	    tx.emit('proposed', message);
+	  };
+
+	  function transactionFailed(message) {
+	    switch (message.engine_result) {
+	      case 'tefPAST_SEQ':
+	        self._resubmit(3, tx);
+	        break;
+	      default:
+	        tx.emit('error', message);
+	    }
+	  };
+
+	  function transactionRetry(message) {
+	    if (TransactionManager._isNoOp(tx)) {
+	      self._resubmit(1, tx);
+	    } else {
+	      self._fillSequence(tx, function() {
+	        self._resubmit(1, tx);
+	      });
+	    }
+	  };
+
+	  function transactionFeeClaimed(message) {
+	    tx.emit('error', message);
+	  };
+
+	  function submissionError(error) {
+	    // Finalized (e.g. aborted) transactions must stop all activity
+	    if (tx.finalized) return;
+
+	    if (TransactionManager._isTooBusy(error)) {
+	      self._resubmit(1, tx);
+	    } else {
+	      self._nextSequence--;
+	      tx.set_state('remoteError');
+	      tx.emit('error', error);
+	    }
+	  };
+
+	  function submitted(message) {
+	    // Finalized (e.g. aborted) transactions must stop all activity
+	    if (tx.finalized) return;
+
+	    // ND: If for some unknown reason our hash wasn't computed correctly this is
+	    // an extra measure.
+	    if (message.tx_json && message.tx_json.hash) {
+	      tx.addSubmittedTxnID(message.tx_json.hash);
+	    }
+
+	    message.result = message.engine_result || '';
+
+	    remote._trace('transactionmanager: submit_response:', message);
+
+	    tx.emit('submitted', message);
+
+	    switch (message.result.slice(0, 3)) {
+	      case 'tec':
+	        transactionFeeClaimed(message);
+	        break;
+	      case 'tes':
+	        transactionProposed(message);
+	        break;
+	      case 'tef':
+	        transactionFailed(message);
+	        break;
+	      case 'ter':
+	        transactionRetry(message);
+	        break;
+	      default:
+	        submissionError(message);
+	    }
+	  };
+
+	  submitRequest.timeout(this._submissionTimeout, function requestTimeout() {
+	    // ND: What if the response is just slow and we get a response that
+	    // `submitted` above will cause to have concurrent resubmit logic streams?
+	    // It's simpler to just mute handlers and look out for finalized
+	    // `transaction` messages.
+
+	    // ND: We should audit the code for other potential multiple resubmit
+	    // streams. Connection/reconnection could be one? That's why it's imperative
+	    // that ALL transactionIDs sent over network are tracked.
+
+	    // Finalized (e.g. aborted) transactions must stop all activity
+	    if (tx.finalized) return;
+
+	    tx.emit('timeout');
+
+	    if (remote._connected) {
+	      remote._trace('transactionmanager: timeout:', tx.tx_json);
+	      self._resubmit(3, tx);
+	    }
+	  });
+
+	  submitRequest.once('error', submitted);
+	  submitRequest.once('success', submitted);
+
+	  if (tx._server) {
+	    submitRequest.server = tx._server;
+	  }
+
+	  submitRequest.request();
+
+	  tx.set_state('client_submitted');
+	  tx.attempts++;
+
+	  return submitRequest;
+	};
+
+	TransactionManager._isNoOp = function(transaction) {
+	  return (typeof transaction === 'object')
+	      && (typeof transaction.tx_json === 'object')
+	      && (transaction.tx_json.TransactionType === 'AccountSet')
+	      && (transaction.tx_json.Flags === 0);
+	};
+
+	TransactionManager._isRemoteError = function(error) {
+	  return (typeof error === 'object')
+	      && (error.error === 'remoteError')
+	      && (typeof error.remote === 'object')
+	};
+
+	TransactionManager._isNotFound = function(error) {
+	  return TransactionManager._isRemoteError(error)
+	      && /^(txnNotFound|transactionNotFound)$/.test(error.remote.error);
+	};
+
+	TransactionManager._isTooBusy = function(error) {
+	  return TransactionManager._isRemoteError(error)
+	      && error.remote.error === 'tooBusy';
+	};
+
+	/**
+	 * Entry point for TransactionManager submission
+	 *
+	 * @param {Object} tx
+	 */
+
+	TransactionManager.prototype.submit = function(tx) {
+	  var self = this;
+
+	  // If sequence number is not yet known, defer until it is.
+	  if (typeof this._nextSequence === 'undefined') {
+	    function sequenceLoaded() {
+	      self.submit(tx);
+	    };
+	    this.once('sequence_loaded', sequenceLoaded);
+	    return;
+	  }
+
+	  // Finalized (e.g. aborted) transactions must stop all activity
+	  if (tx.finalized) return;
+
+	  if (typeof tx.tx_json.Sequence !== 'number') {
+	    tx.tx_json.Sequence = this._nextSequence++;
+	  }
+
+	  tx.submitIndex = this._remote._ledger_current_index;
+	  tx.lastLedger  = void(0);
+	  tx.attempts    = 0;
+	  tx.complete();
+
+	  function finalize(message) {
+	    if (!tx.finalized) {
+	      // ND: We can just remove this `tx` by identity
+	      self._pending.remove(tx);
+	      // self._pending.removeHash(tx._hash);
+	      remote._trace('transactionmanager: finalize_transaction:', tx.tx_json);
+	      tx.finalized = true;
+	      tx.emit('final', message);
+	    }
+	  };
+
+	  tx.on('error', finalize);
+	  tx.once('success', finalize);
+
+	  tx.once('abort', function() {
+	    tx.emit('error', new RippleError('tejAbort', 'Transaction aborted'));
+	  });
+
+	  var fee = Number(tx.tx_json.Fee);
+	  var remote = this._remote;
+
+	  if (!tx._secret && !tx.tx_json.TxnSignature) {
+	    tx.emit('error', new RippleError('tejSecretUnknown', 'Missing secret'));
+	  } else if (!remote.trusted && !remote.local_signing) {
+	    tx.emit('error', new RippleError('tejServerUntrusted', 'Attempt to give secret to untrusted server'));
+	  } else if (fee && fee > this._maxFee) {
+	    tx.emit('error', new RippleError('tejMaxFeeExceeded', 'Max fee exceeded'));
+	  } else {
+	    // ND: this is the ONLY place we put the tx into the queue. The
+	    // TransactionQueue queue is merely a list, so any mutations to tx._hash
+	    // will cause subsequent look ups (eg. inside 'transaction-outbound'
+	    // validated transaction clearing) to fail.
+	    this._pending.push(tx);
+	    this._request(tx);
+	  }
+	};
+
+	exports.TransactionManager = TransactionManager;
 
 
 /***/ },
@@ -5889,18 +6775,18 @@ var ripple =
 	 * SerializedObject.parse() or SerializedObject.serialize().
 	 */
 
-	var assert    = require(27);
-	var extend    = require(41);
-	var binformat = require(9);
+	var assert    = require(26);
+	var extend    = require(36);
+	var binformat = require(10);
 	var utils     = require(11);
 	var sjcl      = utils.sjcl;
 
-	var UInt128   = require(30).UInt128;
-	var UInt160   = require(14).UInt160;
+	var UInt128   = require(34).UInt128;
+	var UInt160   = require(16).UInt160;
 	var UInt256   = require(21).UInt256;
-	var Base      = require(5).Base;
+	var Base      = require(6).Base;
 
-	var amount    = require(3);
+	var amount    = require(14);
 	var Amount    = amount.Amount;
 	var Currency  = amount.Currency;
 
@@ -6724,12 +7610,12 @@ var ripple =
 	var sjcl    = require(11).sjcl;
 	var utils   = require(11);
 	var config  = require(13);
-	var extend  = require(41);
+	var extend  = require(36);
 
 	var BigInteger = utils.jsbn.BigInteger;
 
-	var UInt = require(28).UInt,
-	    Base = require(5).Base;
+	var UInt = require(31).UInt,
+	    Base = require(6).Base;
 
 	//
 	// UInt256 support
@@ -6763,7 +7649,7 @@ var ripple =
 	    this.length = size;
 	};
 
-	var assert = require(27);
+	var assert = require(26);
 
 	exports.INSPECT_MAX_BYTES = 50;
 
@@ -7661,7 +8547,7 @@ var ripple =
 	        'Trying to read beyond buffer length');
 	  }
 
-	  return require(34).readIEEE754(buffer, offset, isBigEndian,
+	  return require(33).readIEEE754(buffer, offset, isBigEndian,
 	      23, 4);
 	}
 
@@ -7682,7 +8568,7 @@ var ripple =
 	        'Trying to read beyond buffer length');
 	  }
 
-	  return require(34).readIEEE754(buffer, offset, isBigEndian,
+	  return require(33).readIEEE754(buffer, offset, isBigEndian,
 	      52, 8);
 	}
 
@@ -7972,7 +8858,7 @@ var ripple =
 	    verifIEEE754(value, 3.4028234663852886e+38, -3.4028234663852886e+38);
 	  }
 
-	  require(34).writeIEEE754(buffer, value, offset, isBigEndian,
+	  require(33).writeIEEE754(buffer, value, offset, isBigEndian,
 	      23, 4);
 	}
 
@@ -8001,7 +8887,7 @@ var ripple =
 	    verifIEEE754(value, 1.7976931348623157E+308, -1.7976931348623157E+308);
 	  }
 
-	  require(34).writeIEEE754(buffer, value, offset, isBigEndian,
+	  require(33).writeIEEE754(buffer, value, offset, isBigEndian,
 	      52, 8);
 	}
 
@@ -8049,155 +8935,29 @@ var ripple =
 /***/ 23:
 /***/ function(module, exports, require) {
 
-	Function.prototype.method = function(name, func) {
-	  this.prototype[name] = func;
-	  return this;
-	};
-
-	function filterErr(code, done) {
-	  return function(e) {
-	    done(e.code !== code ? e : void(0));
-	  };
-	};
-
-	function throwErr(done) {
-	  return function(e) {
-	    if (e) {
-	      throw e;
-	    }
-	    done();
-	  };
-	};
-
-	function trace(comment, func) {
-	  return function() {
-	    console.log("%s: %s", trace, arguments.toString);
-	    func(arguments);
-	  };
-	};
-
-	function arraySet(count, value) {
-	  var a = new Array(count);
-
-	  for (var i=0; i<count; i++) {
-	    a[i] = value;
-	  }
-
-	  return a;
-	};
-
-	function hexToString(h) {
-	  var a = [];
-	  var i = 0;
-
-	  if (h.length % 2) {
-	    a.push(String.fromCharCode(parseInt(h.substring(0, 1), 16)));
-	    i = 1;
-	  }
-
-	  for (; i<h.length; i+=2) {
-	    a.push(String.fromCharCode(parseInt(h.substring(i, i+2), 16)));
-	  }
-
-	  return a.join('');
-	};
-
-	function stringToHex(s) {
-	  var result = '';
-	  for (var i=0; i<s.length; i++) {
-	    var b = s.charCodeAt(i);
-	    result += b < 16 ? '0' + b.toString(16) : b.toString(16);
-	  }
-	  return result;
-	};
-
-	function stringToArray(s) {
-	  var a = new Array(s.length);
-
-	  for (var i=0; i<a.length; i+=1) {
-	    a[i] = s.charCodeAt(i);
-	  }
-
-	  return a;
-	};
-
-	function hexToArray(h) {
-	  return stringToArray(hexToString(h));
-	};
-
-	function chunkString(str, n, leftAlign) {
-	  var ret = [];
-	  var i=0, len=str.length;
-
-	  if (leftAlign) {
-	    i = str.length % n;
-	    if (i) {
-	      ret.push(str.slice(0, i));
-	    }
-	  }
-
-	  for(; i<len; i+=n) {
-	    ret.push(str.slice(i, n + i));
-	  }
-
-	  return ret;
-	};
-
-	function logObject(msg, obj) {
-	  console.log(msg, JSON.stringify(obj, null, 2));
-	};
-
-	function assert(assertion, msg) {
-	  if (!assertion) {
-	    throw new Error("Assertion failed" + (msg ? ": "+msg : "."));
-	  }
-	};
-
 	/**
-	 * Return unique values in array.
-	 */
-	function arrayUnique(arr) {
-	  var u = {}, a = [];
-
-	  for (var i=0, l=arr.length; i<l; i++){
-	    var k = arr[i];
-	    if (u[k]) {
-	      continue;
-	    }
-	    a.push(k);
-	    u[k] = true;
-	  }
-
-	  return a;
-	};
-
-	/**
-	 * Convert a ripple epoch to a JavaScript timestamp.
+	 * Prefix for hashing functions.
 	 *
-	 * JavaScript timestamps are unix epoch in milliseconds.
+	 * These prefixes are inserted before the source material used to
+	 * generate various hashes. This is done to put each hash in its own
+	 * "space." This way, two different types of objects with the
+	 * same binary data will produce different hashes.
+	 *
+	 * Each prefix is a 4-byte value with the last byte set to zero
+	 * and the first three bytes formed from the ASCII equivalent of
+	 * some arbitrary string. For example "TXN".
 	 */
-	function toTimestamp(rpepoch) {
-	  return (rpepoch + 0x386D4380) * 1000;
-	};
 
-	exports.trace         = trace;
-	exports.arraySet      = arraySet;
-	exports.hexToString   = hexToString;
-	exports.hexToArray    = hexToArray;
-	exports.stringToArray = stringToArray;
-	exports.stringToHex   = stringToHex;
-	exports.chunkString   = chunkString;
-	exports.logObject     = logObject;
-	exports.assert        = assert;
-	exports.arrayUnique   = arrayUnique;
-	exports.toTimestamp   = toTimestamp;
-
-	// Going up three levels is needed to escape the src-cov folder used for the
-	// test coverage stuff.
-	exports.sjcl = require(32);
-	exports.jsbn = require(33);
-
-	// vim:sw=2:sts=2:ts=8:et
+	// transaction plus signature to give transaction ID
+	exports.HASH_TX_ID           = 0x54584E00; // 'TXN'
+	// transaction plus metadata
+	exports.HASH_TX_NODE         = 0x534E4400; // 'TND'
+	// inner node in tree
+	exports.HASH_INNER_NODE      = 0x4D494E00; // 'MIN'
+	// inner transaction to sign
+	exports.HASH_TX_SIGN         = 0x53545800; // 'STX'
+	// inner transaction to sign (TESTNET)
+	exports.HASH_TX_SIGN_TESTNET = 0x73747800; // 'stx'
 
 
 /***/ },
@@ -8205,220 +8965,136 @@ var ripple =
 /***/ 24:
 /***/ function(module, exports, require) {
 
-	// If there is no WebSocket, try MozWebSocket (support for some old browsers)
-	try {
-	  module.exports = WebSocket
-	} catch(err) {
-	  module.exports = MozWebSocket
-	}
+	//
+	// Seed support
+	//
+
+	var utils   = require(11);
+	var sjcl    = utils.sjcl;
+	var extend  = require(36);
+
+	var BigInteger = utils.jsbn.BigInteger;
+
+	var Base    = require(6).Base;
+	var UInt    = require(31).UInt;
+	var UInt256 = require(21).UInt256;
+	var KeyPair = require(35).KeyPair;
+
+	var Seed = extend(function () {
+	  // Internal form: NaN or BigInteger
+	  this._curve = sjcl.ecc.curves['c256'];
+	  this._value = NaN;
+	}, UInt);
+
+	Seed.width = 16;
+	Seed.prototype = extend({}, UInt.prototype);
+	Seed.prototype.constructor = Seed;
+
+	// value = NaN on error.
+	// One day this will support rfc1751 too.
+	Seed.prototype.parse_json = function (j) {
+	  if (typeof j === 'string') {
+	    if (!j.length) {
+	      this._value = NaN;
+	    // XXX Should actually always try and continue if it failed.
+	    } else if (j[0] === "s") {
+	      this._value = Base.decode_check(Base.VER_FAMILY_SEED, j);
+	    } else if (j.length === 32) {
+	      this._value = this.parse_hex(j);
+	    // XXX Should also try 1751
+	    } else {
+	      this.parse_passphrase(j);
+	    }
+	  } else {
+	    this._value = NaN;
+	  }
+
+	  return this;
+	};
+
+	Seed.prototype.parse_passphrase = function (j) {
+	  if (typeof j !== 'string') {
+	    throw new Error("Passphrase must be a string");
+	  }
+
+	  var hash = sjcl.hash.sha512.hash(sjcl.codec.utf8String.toBits(j));
+	  var bits = sjcl.bitArray.bitSlice(hash, 0, 128);
+
+	  this.parse_bits(bits);
+
+	  return this;
+	};
+
+	Seed.prototype.to_json = function () {
+	  if (!(this._value instanceof BigInteger)) {
+	    return NaN;
+	  }
+
+	  var output = Base.encode_check(Base.VER_FAMILY_SEED, this.to_bytes());
+
+	  return output;
+	};
+
+	function append_int(a, i) {
+	  return [].concat(a, i >> 24, (i >> 16) & 0xff, (i >> 8) & 0xff, i & 0xff);
+	};
+
+	function firstHalfOfSHA512(bytes) {
+	  return sjcl.bitArray.bitSlice(
+	    sjcl.hash.sha512.hash(sjcl.codec.bytes.toBits(bytes)),
+	    0, 256
+	  );
+	};
+
+	function SHA256_RIPEMD160(bits) {
+	  return sjcl.hash.ripemd160.hash(sjcl.hash.sha256.hash(bits));
+	};
+
+	Seed.prototype.get_key = function (account_id) {
+	  if (!this.is_valid()) {
+	    throw new Error("Cannot generate keys from invalid seed!");
+	  }
+	  // XXX Should loop over keys until we find the right one
+
+	  var private_gen, public_gen;
+	  var curve = this._curve;
+	  var seq = 0, i = 0;
+
+	  do {
+	    private_gen = sjcl.bn.fromBits(firstHalfOfSHA512(append_int(this.to_bytes(), i)));
+	    i++;
+	  } while (!curve.r.greaterEquals(private_gen));
+
+	  public_gen = curve.G.mult(private_gen);
+
+	  var sec;
+	  i = 0;
+
+	  do {
+	    sec = sjcl.bn.fromBits(firstHalfOfSHA512(append_int(append_int(public_gen.toBytesCompressed(), seq), i)));
+	    i++;
+	  } while (!curve.r.greaterEquals(sec));
+
+	  sec = sec.add(private_gen).mod(curve.r);
+
+	  return KeyPair.from_bn_secret(sec);
+	};
+
+	exports.Seed = Seed;
+
 
 /***/ },
 
 /***/ 25:
 /***/ function(module, exports, require) {
 
-	var EventEmitter = exports.EventEmitter = function EventEmitter() {};
-	var isArray = require(38);
-	var indexOf = require(35);
+	var events = require(28);
 
-
-
-	// By default EventEmitters will print a warning if more than
-	// 10 listeners are added to it. This is a useful default which
-	// helps finding memory leaks.
-	//
-	// Obviously not all Emitters should be limited to 10. This function allows
-	// that to be increased. Set to zero for unlimited.
-	var defaultMaxListeners = 10;
-	EventEmitter.prototype.setMaxListeners = function(n) {
-	  if (!this._events) this._events = {};
-	  this._maxListeners = n;
-	};
-
-
-	EventEmitter.prototype.emit = function(type) {
-	  // If there is no 'error' event listener then throw.
-	  if (type === 'error') {
-	    if (!this._events || !this._events.error ||
-	        (isArray(this._events.error) && !this._events.error.length))
-	    {
-	      if (arguments[1] instanceof Error) {
-	        throw arguments[1]; // Unhandled 'error' event
-	      } else {
-	        throw new Error("Uncaught, unspecified 'error' event.");
-	      }
-	      return false;
-	    }
-	  }
-
-	  if (!this._events) return false;
-	  var handler = this._events[type];
-	  if (!handler) return false;
-
-	  if (typeof handler == 'function') {
-	    switch (arguments.length) {
-	      // fast cases
-	      case 1:
-	        handler.call(this);
-	        break;
-	      case 2:
-	        handler.call(this, arguments[1]);
-	        break;
-	      case 3:
-	        handler.call(this, arguments[1], arguments[2]);
-	        break;
-	      // slower
-	      default:
-	        var args = Array.prototype.slice.call(arguments, 1);
-	        handler.apply(this, args);
-	    }
-	    return true;
-
-	  } else if (isArray(handler)) {
-	    var args = Array.prototype.slice.call(arguments, 1);
-
-	    var listeners = handler.slice();
-	    for (var i = 0, l = listeners.length; i < l; i++) {
-	      listeners[i].apply(this, args);
-	    }
-	    return true;
-
-	  } else {
-	    return false;
-	  }
-	};
-
-	// EventEmitter is defined in src/node_events.cc
-	// EventEmitter.prototype.emit() is also defined there.
-	EventEmitter.prototype.addListener = function(type, listener) {
-	  if ('function' !== typeof listener) {
-	    throw new Error('addListener only takes instances of Function');
-	  }
-
-	  if (!this._events) this._events = {};
-
-	  // To avoid recursion in the case that type == "newListeners"! Before
-	  // adding it to the listeners, first emit "newListeners".
-	  this.emit('newListener', type, listener);
-	  if (!this._events[type]) {
-	    // Optimize the case of one listener. Don't need the extra array object.
-	    this._events[type] = listener;
-	  } else if (isArray(this._events[type])) {
-
-	    // If we've already got an array, just append.
-	    this._events[type].push(listener);
-
-	  } else {
-	    // Adding the second element, need to change to array.
-	    this._events[type] = [this._events[type], listener];
-	  }
-
-	  // Check for listener leak
-	  if (isArray(this._events[type]) && !this._events[type].warned) {
-	    var m;
-	    if (this._maxListeners !== undefined) {
-	      m = this._maxListeners;
-	    } else {
-	      m = defaultMaxListeners;
-	    }
-
-	    if (m && m > 0 && this._events[type].length > m) {
-	      this._events[type].warned = true;
-	      console.error('(events) warning: possible EventEmitter memory ' +
-	                    'leak detected. %d listeners added. ' +
-	                    'Use emitter.setMaxListeners() to increase limit.',
-	                    this._events[type].length);
-	      console.trace();
-	    }
-	  }
-	  return this;
-	};
-
-	EventEmitter.prototype.on = EventEmitter.prototype.addListener;
-
-	EventEmitter.prototype.once = function(type, listener) {
-	  if ('function' !== typeof listener) {
-	    throw new Error('.once only takes instances of Function');
-	  }
-
-	  var self = this;
-	  function g() {
-	    self.removeListener(type, g);
-	    listener.apply(this, arguments);
-	  }
-
-	  g.listener = listener;
-	  self.on(type, g);
-
-	  return this;
-	};
-
-	EventEmitter.prototype.removeListener = function(type, listener) {
-	  if ('function' !== typeof listener) {
-	    throw new Error('removeListener only takes instances of Function');
-	  }
-
-	  // does not use listeners(), so no side effect of creating _events[type]
-	  if (!this._events || !this._events[type]) return this;
-
-	  var list = this._events[type];
-
-	  if (isArray(list)) {
-	    var position = -1;
-	    for (var i = 0, length = list.length; i < length; i++) {
-	      if (list[i] === listener ||
-	          (list[i].listener && list[i].listener === listener))
-	      {
-	        position = i;
-	        break;
-	      }
-	    }
-
-	    if (position < 0) return this;
-	    list.splice(position, 1);
-	    if (list.length == 0)
-	      delete this._events[type];
-	  } else if (list === listener ||
-	             (list.listener && list.listener === listener)) {
-	    delete this._events[type];
-	  }
-
-	  return this;
-	};
-
-	EventEmitter.prototype.removeAllListeners = function(type) {
-	  if (arguments.length === 0) {
-	    this._events = {};
-	    return this;
-	  }
-
-	  // does not use listeners(), so no side effect of creating _events[type]
-	  if (type && this._events && this._events[type]) this._events[type] = null;
-	  return this;
-	};
-
-	EventEmitter.prototype.listeners = function(type) {
-	  if (!this._events) this._events = {};
-	  if (!this._events[type]) this._events[type] = [];
-	  if (!isArray(this._events[type])) {
-	    this._events[type] = [this._events[type]];
-	  }
-	  return this._events[type];
-	};
-
-
-/***/ },
-
-/***/ 26:
-/***/ function(module, exports, require) {
-
-	var events = require(25);
-
-	var isArray = require(38);
-	var Object_keys = require(36);
-	var Object_getOwnPropertyNames = require(39);
-	var Object_create = require(40);
-	var isRegExp = require(37);
+	var isArray = require(40);
+	var Object_keys = require(37);
+	var Object_getOwnPropertyNames = require(38);
+	var Object_create = require(39);
+	var isRegExp = require(41);
 
 	exports.isArray = isArray;
 	exports.isDate = isDate;
@@ -8723,15 +9399,15 @@ var ripple =
 
 /***/ },
 
-/***/ 27:
+/***/ 26:
 /***/ function(module, exports, require) {
 
 	// UTILITY
-	var util = require(26);
+	var util = require(25);
 	var pSlice = Array.prototype.slice;
 
-	var objectKeys = require(36);
-	var isRegExp = require(37);
+	var objectKeys = require(37);
+	var isRegExp = require(41);
 
 	// 1. The assert module provides functions that throw
 	// AssertionError's when particular conditions are not met. The
@@ -9045,817 +9721,249 @@ var ripple =
 
 /***/ },
 
+/***/ 27:
+/***/ function(module, exports, require) {
+
+	// If there is no WebSocket, try MozWebSocket (support for some old browsers)
+	try {
+	  module.exports = WebSocket;
+	} catch(err) {
+	  module.exports = MozWebSocket;
+	}
+
+	// Some versions of Safari Mac 5 and Safari iOS 4 seem to support websockets,
+	// but can't communicate with websocketpp, which is what rippled uses.
+	//
+	// Note that we check for both the WebSocket protocol version the browser seems
+	// to implement as well as the user agent etc. The reason is that we want to err
+	// on the side of trying to connect since we don't want to accidentally disable
+	// a browser that would normally work fine.
+	var match, versionRegexp = /Version\/(\d+)\.(\d+)(?:\.(\d+))?.*Safari\//;
+	if (
+	  // Is browser
+	  "object" === typeof navigator &&
+	  "string" === typeof navigator.userAgent &&
+	  // Is Safari
+	  (match = versionRegexp.exec(navigator.userAgent)) &&
+	  // And uses the old websocket protocol
+	  2 === window.WebSocket.CLOSED
+	) {
+	  // Is iOS
+	  if (/iP(hone|od|ad)/.test(navigator.platform)) {
+	    // Below version 5 is broken
+	    if (+match[1] < 5) {
+	      module.exports = void(0);
+	    }
+	  // Is any other Mac OS
+	  // If you want to refactor this code, be careful, iOS user agents contain the
+	  // string "like Mac OS X".
+	  } else if (navigator.appVersion.indexOf("Mac") !== -1) {
+	    // Below version 6 is broken
+	    if (+match[1] < 6) {
+	      module.exports = void(0);
+	    }
+	  }
+	}
+
+
+/***/ },
+
 /***/ 28:
 /***/ function(module, exports, require) {
 
-	var utils   = require(11);
-	var sjcl    = utils.sjcl;
-	var config  = require(13);
+	var EventEmitter = exports.EventEmitter = function EventEmitter() {};
+	var isArray = require(40);
+	var indexOf = require(42);
 
-	var BigInteger = utils.jsbn.BigInteger;
 
-	var Base = require(5).Base;
 
+	// By default EventEmitters will print a warning if more than
+	// 10 listeners are added to it. This is a useful default which
+	// helps finding memory leaks.
 	//
-	// Abstract UInt class
-	//
-	// Base class for UInt??? classes
-	//
-
-	var UInt = function () {
-	  // Internal form: NaN or BigInteger
-	  this._value  = NaN;
+	// Obviously not all Emitters should be limited to 10. This function allows
+	// that to be increased. Set to zero for unlimited.
+	var defaultMaxListeners = 10;
+	EventEmitter.prototype.setMaxListeners = function(n) {
+	  if (!this._events) this._events = {};
+	  this._maxListeners = n;
 	};
 
-	UInt.json_rewrite = function (j, opts) {
-	  return this.from_json(j).to_json(opts);
-	};
 
-	// Return a new UInt from j.
-	UInt.from_generic = function (j) {
-	  if (j instanceof this) {
-	    return j.clone();
-	  } else {
-	    return (new this()).parse_generic(j);
-	  }
-	};
-
-	// Return a new UInt from j.
-	UInt.from_hex = function (j) {
-	  if (j instanceof this) {
-	    return j.clone();
-	  } else {
-	    return (new this()).parse_hex(j);
-	  }
-	};
-
-	// Return a new UInt from j.
-	UInt.from_json = function (j) {
-	  if (j instanceof this) {
-	    return j.clone();
-	  } else {
-	    return (new this()).parse_json(j);
-	  }
-	};
-
-	// Return a new UInt from j.
-	UInt.from_bits = function (j) {
-	  if (j instanceof this) {
-	    return j.clone();
-	  } else {
-	    return (new this()).parse_bits(j);
-	  }
-	};
-
-	// Return a new UInt from j.
-	UInt.from_bytes = function (j) {
-	  if (j instanceof this) {
-	    return j.clone();
-	  } else {
-	    return (new this()).parse_bytes(j);
-	  }
-	};
-
-	// Return a new UInt from j.
-	UInt.from_bn = function (j) {
-	  if (j instanceof this) {
-	    return j.clone();
-	  } else {
-	    return (new this()).parse_bn(j);
-	  }
-	};
-
-	UInt.is_valid = function (j) {
-	  return this.from_json(j).is_valid();
-	};
-
-	UInt.prototype.clone = function () {
-	  return this.copyTo(new this.constructor());
-	};
-
-	// Returns copy.
-	UInt.prototype.copyTo = function (d) {
-	  d._value = this._value;
-
-	  return d;
-	};
-
-	UInt.prototype.equals = function (d) {
-	  return this._value instanceof BigInteger && d._value instanceof BigInteger && this._value.equals(d._value);
-	};
-
-	UInt.prototype.is_valid = function () {
-	  return this._value instanceof BigInteger;
-	};
-
-	UInt.prototype.is_zero = function () {
-	  return this._value.equals(BigInteger.ZERO);
-	};
-
-	// value = NaN on error.
-	UInt.prototype.parse_generic = function (j) {
-	  // Canonicalize and validate
-	  if (config.accounts && j in config.accounts)
-	    j = config.accounts[j].account;
-
-	  switch (j) {
-	  case undefined:
-	  case "0":
-	  case this.constructor.STR_ZERO:
-	  case this.constructor.ACCOUNT_ZERO:
-	  case this.constructor.HEX_ZERO:
-	    this._value  = BigInteger.valueOf();
-	    break;
-
-	  case "1":
-	  case this.constructor.STR_ONE:
-	  case this.constructor.ACCOUNT_ONE:
-	  case this.constructor.HEX_ONE:
-	    this._value  = new BigInteger([1]);
-
-	    break;
-
-	  default:
-	    if ('string' !== typeof j) {
-		    this._value  = NaN;
-	    }
-	    else if (this.constructor.width === j.length) {
-		    this._value  = new BigInteger(utils.stringToArray(j), 256);
-	    }
-	    else if ((this.constructor.width*2) === j.length) {
-		    // XXX Check char set!
-		    this._value  = new BigInteger(j, 16);
-	    }
-	    else {
-		    this._value  = NaN;
+	EventEmitter.prototype.emit = function(type) {
+	  // If there is no 'error' event listener then throw.
+	  if (type === 'error') {
+	    if (!this._events || !this._events.error ||
+	        (isArray(this._events.error) && !this._events.error.length))
+	    {
+	      if (arguments[1] instanceof Error) {
+	        throw arguments[1]; // Unhandled 'error' event
+	      } else {
+	        throw new Error("Uncaught, unspecified 'error' event.");
+	      }
+	      return false;
 	    }
 	  }
 
+	  if (!this._events) return false;
+	  var handler = this._events[type];
+	  if (!handler) return false;
+
+	  if (typeof handler == 'function') {
+	    switch (arguments.length) {
+	      // fast cases
+	      case 1:
+	        handler.call(this);
+	        break;
+	      case 2:
+	        handler.call(this, arguments[1]);
+	        break;
+	      case 3:
+	        handler.call(this, arguments[1], arguments[2]);
+	        break;
+	      // slower
+	      default:
+	        var args = Array.prototype.slice.call(arguments, 1);
+	        handler.apply(this, args);
+	    }
+	    return true;
+
+	  } else if (isArray(handler)) {
+	    var args = Array.prototype.slice.call(arguments, 1);
+
+	    var listeners = handler.slice();
+	    for (var i = 0, l = listeners.length; i < l; i++) {
+	      listeners[i].apply(this, args);
+	    }
+	    return true;
+
+	  } else {
+	    return false;
+	  }
+	};
+
+	// EventEmitter is defined in src/node_events.cc
+	// EventEmitter.prototype.emit() is also defined there.
+	EventEmitter.prototype.addListener = function(type, listener) {
+	  if ('function' !== typeof listener) {
+	    throw new Error('addListener only takes instances of Function');
+	  }
+
+	  if (!this._events) this._events = {};
+
+	  // To avoid recursion in the case that type == "newListeners"! Before
+	  // adding it to the listeners, first emit "newListeners".
+	  this.emit('newListener', type, listener);
+	  if (!this._events[type]) {
+	    // Optimize the case of one listener. Don't need the extra array object.
+	    this._events[type] = listener;
+	  } else if (isArray(this._events[type])) {
+
+	    // If we've already got an array, just append.
+	    this._events[type].push(listener);
+
+	  } else {
+	    // Adding the second element, need to change to array.
+	    this._events[type] = [this._events[type], listener];
+	  }
+
+	  // Check for listener leak
+	  if (isArray(this._events[type]) && !this._events[type].warned) {
+	    var m;
+	    if (this._maxListeners !== undefined) {
+	      m = this._maxListeners;
+	    } else {
+	      m = defaultMaxListeners;
+	    }
+
+	    if (m && m > 0 && this._events[type].length > m) {
+	      this._events[type].warned = true;
+	      console.error('(events) warning: possible EventEmitter memory ' +
+	                    'leak detected. %d listeners added. ' +
+	                    'Use emitter.setMaxListeners() to increase limit.',
+	                    this._events[type].length);
+	      console.trace();
+	    }
+	  }
 	  return this;
 	};
 
-	UInt.prototype.parse_hex = function (j) {
-	  if ('string' === typeof j &&
-	      j.length === (this.constructor.width * 2)) {
-	    this._value  = new BigInteger(j, 16);
-	  } else {
-	    this._value  = NaN;
+	EventEmitter.prototype.on = EventEmitter.prototype.addListener;
+
+	EventEmitter.prototype.once = function(type, listener) {
+	  if ('function' !== typeof listener) {
+	    throw new Error('.once only takes instances of Function');
+	  }
+
+	  var self = this;
+	  function g() {
+	    self.removeListener(type, g);
+	    listener.apply(this, arguments);
+	  }
+
+	  g.listener = listener;
+	  self.on(type, g);
+
+	  return this;
+	};
+
+	EventEmitter.prototype.removeListener = function(type, listener) {
+	  if ('function' !== typeof listener) {
+	    throw new Error('removeListener only takes instances of Function');
+	  }
+
+	  // does not use listeners(), so no side effect of creating _events[type]
+	  if (!this._events || !this._events[type]) return this;
+
+	  var list = this._events[type];
+
+	  if (isArray(list)) {
+	    var position = -1;
+	    for (var i = 0, length = list.length; i < length; i++) {
+	      if (list[i] === listener ||
+	          (list[i].listener && list[i].listener === listener))
+	      {
+	        position = i;
+	        break;
+	      }
+	    }
+
+	    if (position < 0) return this;
+	    list.splice(position, 1);
+	    if (list.length == 0)
+	      delete this._events[type];
+	  } else if (list === listener ||
+	             (list.listener && list.listener === listener)) {
+	    delete this._events[type];
 	  }
 
 	  return this;
 	};
 
-	UInt.prototype.parse_bits = function (j) {
-	  if (sjcl.bitArray.bitLength(j) !== this.constructor.width * 8) {
-	    this._value = NaN;
-	  } else {
-	    var bytes = sjcl.codec.bytes.fromBits(j);
-	    this.parse_bytes(bytes);
+	EventEmitter.prototype.removeAllListeners = function(type) {
+	  if (arguments.length === 0) {
+	    this._events = {};
+	    return this;
 	  }
 
+	  // does not use listeners(), so no side effect of creating _events[type]
+	  if (type && this._events && this._events[type]) this._events[type] = null;
 	  return this;
 	};
 
-
-	UInt.prototype.parse_bytes = function (j) {
-	  if (!Array.isArray(j) || j.length !== this.constructor.width) {
-		this._value = NaN;
-	  } else {
-		  this._value  = new BigInteger([0].concat(j), 256);
+	EventEmitter.prototype.listeners = function(type) {
+	  if (!this._events) this._events = {};
+	  if (!this._events[type]) this._events[type] = [];
+	  if (!isArray(this._events[type])) {
+	    this._events[type] = [this._events[type]];
 	  }
-
-	  return this;
+	  return this._events[type];
 	};
-
-
-	UInt.prototype.parse_json = UInt.prototype.parse_hex;
-
-	UInt.prototype.parse_bn = function (j) {
-	  if (j instanceof sjcl.bn &&
-	      j.bitLength() <= this.constructor.width * 8) {
-	    var bytes = sjcl.codec.bytes.fromBits(j.toBits());
-		  this._value  = new BigInteger(bytes, 256);
-	  } else {
-	    this._value = NaN;
-	  }
-
-	  return this;
-	};
-
-	// Convert from internal form.
-	UInt.prototype.to_bytes = function () {
-	  if (!(this._value instanceof BigInteger))
-	    return null;
-
-	  var bytes  = this._value.toByteArray();
-	  bytes = bytes.map(function (b) { return (b+256) % 256; });
-	  var target = this.constructor.width;
-
-	  // XXX Make sure only trim off leading zeros.
-	  bytes = bytes.slice(-target);
-	  while (bytes.length < target) bytes.unshift(0);
-
-	  return bytes;
-	};
-
-	UInt.prototype.to_hex = function () {
-	  if (!(this._value instanceof BigInteger))
-	    return null;
-
-	  var bytes = this.to_bytes();
-	  return sjcl.codec.hex.fromBits(sjcl.codec.bytes.toBits(bytes)).toUpperCase();
-	};
-
-	UInt.prototype.to_json = UInt.prototype.to_hex;
-
-	UInt.prototype.to_bits = function () {
-	  if (!(this._value instanceof BigInteger))
-	    return null;
-
-	  var bytes = this.to_bytes();
-
-	  return sjcl.codec.bytes.toBits(bytes);
-	};
-
-	UInt.prototype.to_bn = function () {
-	  if (!(this._value instanceof BigInteger))
-	    return null;
-
-	  var bits = this.to_bits();
-
-	  return sjcl.bn.fromBits(bits);
-	};
-
-	exports.UInt = UInt;
-
-	// vim:sw=2:sts=2:ts=8:et
 
 
 /***/ },
 
 /***/ 29:
-/***/ function(module, exports, require) {
-
-	var util         = require(26);
-	var EventEmitter = require(25).EventEmitter;
-	var RippleError  = require(10).RippleError;
-	var PendingQueue = require(42).TransactionQueue;
-
-	/**
-	 * @constructor TransactionManager
-	 * @param {Account} account
-	 */
-
-	function TransactionManager(account) {
-	  EventEmitter.call(this);
-
-	  var self = this;
-
-	  this._account           = account;
-	  this._accountID         = account._account_id;
-	  this._remote            = account._remote;
-	  this._pending           = new PendingQueue;
-	  this._nextSequence      = void(0);
-	  this._cache             = { };
-	  this._sequenceCache     = { };
-	  this._maxFee            = this._remote.max_fee;
-	  this._submissionTimeout = this._remote._submission_timeout;
-
-	  // Query remote server for next account
-	  // transaction sequence number
-	  this._loadSequence();
-
-	  function transactionReceived(res) {
-	    var transaction = TransactionManager.normalizeTransaction(res);
-	    var sequence    = transaction.transaction.Sequence;
-	    var hash        = transaction.transaction.hash;
-
-	    self._sequenceCache[sequence] = transaction;
-
-	    var pending = self._pending.get('_hash', hash);
-
-	    self._remote._trace('transactionmanager: transaction_received: %s', transaction.transaction);
-
-	    if (pending) {
-	      pending.emit('success', transaction);
-	    } else {
-	      self._cache[hash] = transaction;
-	    }
-	  };
-
-	  this._account.on('transaction-outbound', transactionReceived);
-
-	  function adjustFees() {
-	    self._pending.forEach(function(pending) {
-	      if (self._remote.local_fee && pending.tx_json.Fee) {
-	        var oldFee = pending.tx_json.Fee;
-	        var newFee = self._remote.feeTx(pending.fee_units()).to_json();
-	        pending.tx_json.Fee = newFee;
-	        pending.emit('fee_adjusted', oldFee, newFee);
-	        self._remote._trace('transactionmanager: adjusting_fees: %s', pending, oldFee, newFee);
-	      }
-	    });
-	  };
-
-	  this._remote.on('load_changed', adjustFees);
-
-	  function updatePendingStatus(ledger) {
-	    self._pending.forEach(function(pending) {
-	      pending.lastLedger = ledger;
-	      switch (ledger.ledger_index - pending.submitIndex) {
-	        case 8:
-	          pending.emit('lost', ledger);
-	          pending.emit('error', new RippleError('tejLost', 'Transaction lost'));
-	          self._remote._trace('transactionmanager: update_pending: %s', pending.tx_json);
-	          break;
-	        case 4:
-	          pending.set_state('client_missing');
-	          pending.emit('missing', ledger);
-	          break;
-	      }
-	    });
-	  };
-
-	  this._remote.on('ledger_closed', updatePendingStatus);
-
-	  function remoteReconnected() {
-	    //Load account transaction history
-	    var options = {
-	      account: self._accountID,
-	      ledger_index_min: -1,
-	      ledger_index_max: -1,
-	      limit: 10
-	    }
-
-	    self._remote.requestAccountTx(options, function(err, transactions) {
-	      if (!err && transactions.transactions) {
-	        transactions.transactions.forEach(transactionReceived);
-	      }
-
-	      self._remote.on('ledger_closed', updatePendingStatus);
-
-	      //Load next transaction sequence
-	      self._loadSequence(function sequenceLoaded() {
-	        self._resubmit(3);
-	      });
-	    });
-
-	    self.emit('reconnect');
-	  };
-
-	  function remoteDisconnected() {
-	    self._remote.once('connect', remoteReconnected);
-	    self._remote.removeListener('ledger_closed', updatePendingStatus);
-	  };
-
-	  this._remote.on('disconnect', remoteDisconnected);
-	};
-
-	util.inherits(TransactionManager, EventEmitter);
-
-	//Normalize transactions received from account
-	//transaction stream and account_tx
-	TransactionManager.normalizeTransaction = function(tx) {
-	  var transaction = tx;
-
-	  if (!tx.engine_result) {
-	    // account_tx
-	    transaction = {
-	      engine_result:          tx.meta.TransactionResult,
-	      transaction:            tx.tx,
-	      hash:                   tx.tx.hash,
-	      ledger_index:           tx.tx.ledger_index,
-	      meta:                   tx.meta,
-	      type:                   'transaction',
-	      validated:              true
-	    }
-	    transaction.result         = transaction.engine_result;
-	    transaction.result_message = transaction.engine_result_message;
-	  }
-
-	  transaction.metadata = transaction.meta;
-
-	  if (!transaction.tx_json) {
-	    transaction.tx_json = transaction.transaction;
-	  }
-
-	  return transaction;
-	};
-
-	//Fill an account transaction sequence
-	TransactionManager.prototype._fillSequence = function(tx, callback) {
-	  var fill = this._remote.transaction();
-	  fill.account_set(this._accountID);
-	  fill.tx_json.Sequence = tx.tx_json.Sequence - 1;
-	  fill.submit(callback);
-	};
-
-	TransactionManager.prototype._loadSequence = function(callback) {
-	  var self = this;
-
-	  function sequenceLoaded(err, sequence) {
-	    if (typeof sequence === 'number') {
-	      self._nextSequence = sequence;
-	      self.emit('sequence_loaded', sequence);
-	    } else {
-	      return setTimeout(function() {
-	        self._loadSequence(callback);
-	      }, 1000 * 3);
-	    }
-	    if (typeof callback === 'function') {
-	      callback(err, sequence);
-	    }
-	  };
-
-	  this._account.getNextSequence(sequenceLoaded);
-	};
-
-	TransactionManager.prototype._resubmit = function(waitLedgers, pending) {
-	  var self = this;
-	  var pending = pending ? [ pending ] : this._pending;
-
-	  if (waitLedgers) {
-	    var ledgers = Number(waitLedgers) || 3;
-	    this._waitLedgers(ledgers, function() {
-	      pending.forEach(resubmitTransaction);
-	    });
-	  } else {
-	    pending.forEach(resubmitTransaction);
-	  }
-
-	  function resubmitTransaction(pending) {
-	    if (!pending || pending.finalized) {
-	      // Transaction has been finalized, nothing to do
-	      return;
-	    }
-
-	    var hashCached = self._cache[pending._hash];
-	    self._remote._trace('transactionmanager: resubmit: %s', pending.tx_json);
-
-	    if (hashCached) {
-	      pending.emit('success', hashCached);
-	    } else {
-	      while (self._sequenceCache[pending.tx_json.Sequence]) {
-	        //Sequence number has been consumed by another transaction
-	        self._remote._trace('transactionmanager: incrementing sequence: %s', pending.tx_json);
-	        pending.tx_json.Sequence += 1;
-	      }
-
-	      pending.once('submitted', function() {
-	        pending.emit('resubmitted');
-	        self._loadSequence();
-	      });
-
-	      self._request(pending);
-	    }
-	  }
-	};
-
-	TransactionManager.prototype._waitLedgers = function(ledgers, callback) {
-	  var self = this;
-	  var closes = 0;
-
-	  function ledgerClosed() {
-	    if (++closes === ledgers) {
-	      callback();
-	      self._remote.removeListener('ledger_closed', ledgerClosed);
-	    }
-	  };
-
-	  this._remote.on('ledger_closed', ledgerClosed);
-	};
-
-	TransactionManager.prototype._request = function(tx) {
-	  var self   = this;
-	  var remote = this._remote;
-
-	  if (tx.attempts > 10) {
-	    tx.emit('error', new RippleError('tejAttemptsExceeded'));
-	    return;
-	  }
-
-	  var submitRequest = remote.requestSubmit();
-
-	  submitRequest.build_path(tx._build_path);
-
-	  if (remote.local_signing) {
-	    tx.sign();
-	    submitRequest.tx_blob(tx.serialize().to_hex());
-	  } else {
-	    submitRequest.secret(tx._secret);
-	    submitRequest.tx_json(tx.tx_json);
-	  }
-
-	  tx._hash = tx.hash();
-
-	  remote._trace('transactionmanager: submit: %s', tx.tx_json);
-
-	  function transactionProposed(message) {
-	    tx.set_state('client_proposed');
-	    // If server is honest, don't expect a final if rejected.
-	    message.rejected = tx.isRejected(message.engine_result_code)
-	    tx.emit('proposed', message);
-	  };
-
-	  function transactionFailed(message) {
-	    switch (message.engine_result) {
-	      case 'tefPAST_SEQ':
-	        self._resubmit(3, tx);
-	      break;
-	      default:
-	        submissionError(message);
-	    }
-	  };
-
-	  function transactionRetry(message) {
-	    switch (message.engine_result) {
-	      case 'terPRE_SEQ':
-	        self._fillSequence(tx, function() {
-	          self._resubmit(2, tx);
-	        });
-	        break;
-	      default:
-	        self._resubmit(1, tx);
-	    }
-	  };
-
-	  function transactionFeeClaimed(message) {
-	    tx.emit('error', message);
-	  };
-
-	  function submissionError(error) {
-	    if (self._is_too_busy(error)) {
-	      self._resubmit(1, tx);
-	    } else {
-	      self._nextSequence--;
-	      tx.set_state('remoteError');
-	      tx.emit('submitted', error);
-	      tx.emit('error', error);
-	    }
-	  };
-
-	  function submissionSuccess(message) {
-	    if (message.tx_json.hash) {
-	      tx._hash = message.tx_json.hash;
-	    }
-
-	    remote._trace('transactionmanager: submit_response: %s', message);
-
-	    message.result = message.engine_result || '';
-
-	    tx.emit('submitted', message);
-
-	    switch (message.result.slice(0, 3)) {
-	      case 'tec':
-	        transactionFeeClaimed(message);
-	        break;
-	      case 'tes':
-	        transactionProposed(message);
-	        break;
-	      case 'tef':
-	        transactionFailed(message);
-	        break;
-	      case 'ter':
-	        transactionRetry(message);
-	        break;
-	      default:
-	        submissionError(message);
-	    }
-	  };
-
-	  submitRequest.once('success', submissionSuccess);
-	  submitRequest.once('error', submissionError);
-
-	  submitRequest.timeout(this._submissionTimeout, function() {
-	    tx.emit('timeout');
-	    if (remote._connected) {
-	      remote._trace('transactionmanager: timeout: %s', tx.tx_json);
-	      self._resubmit(3, tx);
-	    }
-	  });
-
-	  submitRequest.request();
-
-	  tx.set_state('client_submitted');
-	  tx.attempts++;
-
-	  return submitRequest;
-	};
-
-	TransactionManager.prototype._is_remote_error = function(error) {
-	  return error && typeof error === 'object'
-	      && error.error === 'remoteError'
-	      && typeof error.remote === 'object'
-	};
-
-	TransactionManager.prototype._is_not_found = function(error) {
-	  return this._is_remote_error(error) && /^(txnNotFound|transactionNotFound)$/.test(error.remote.error);
-	};
-
-	TransactionManager.prototype._is_too_busy = function(error) {
-	  return this._is_remote_error(error) && error.remote.error === 'tooBusy';
-	};
-
-	/**
-	 * Entry point for TransactionManager submission
-	 *
-	 * @param {Object} tx
-	 */
-
-	TransactionManager.prototype.submit = function(tx) {
-	  var self = this;
-
-	  // If sequence number is not yet known, defer until it is.
-	  if (typeof this._nextSequence === 'undefined') {
-	    function sequenceLoaded() {
-	      self.submit(tx);
-	    };
-	    this.once('sequence_loaded', sequenceLoaded);
-	    return;
-	  }
-
-	  if (typeof tx.tx_json.Sequence !== 'number') {
-	    tx.tx_json.Sequence = this._nextSequence++;
-	  }
-
-	  tx.submitIndex = this._remote._ledger_current_index;
-	  tx.lastLedger  = void(0);
-	  tx.attempts    = 0;
-	  tx.complete();
-
-	  function finalize(message) {
-	    if (!tx.finalized) {
-	      self._pending.removeHash(tx._hash);
-	      remote._trace('transactionmanager: finalize_transaction: %s', tx.tx_json);
-	      tx.finalized = true;
-	      tx.emit('final', message);
-	    }
-	  };
-
-	  tx.on('error', finalize);
-	  tx.once('success', finalize);
-
-	  tx.once('abort', function() {
-	    tx.emit('error', new RippleError('tejAbort', 'Transaction aborted'));
-	  });
-
-	  var fee = Number(tx.tx_json.Fee);
-	  var remote = this._remote;
-
-	  if (!tx._secret && !tx.tx_json.TxnSignature) {
-	    tx.emit('error', new RippleError('tejSecretUnknown', 'Missing secret'));
-	  } else if (!remote.trusted && !remote.local_signing) {
-	    tx.emit('error', new RippleError('tejServerUntrusted', 'Attempt to give secret to untrusted server'));
-	  } else if (fee && fee > this._maxFee) {
-	    tx.emit('error', new RippleError('tejMaxFeeExceeded', 'Max fee exceeded'));
-	  } else {
-	    this._pending.push(tx);
-	    this._request(tx);
-	  }
-	};
-
-	exports.TransactionManager = TransactionManager;
-
-
-/***/ },
-
-/***/ 30:
-/***/ function(module, exports, require) {
-
-	var sjcl    = require(11).sjcl;
-	var utils   = require(11);
-	var config  = require(13);
-	var extend  = require(41);
-
-	var BigInteger = utils.jsbn.BigInteger;
-
-	var UInt = require(28).UInt,
-	    Base = require(5).Base;
-
-	//
-	// UInt128 support
-	//
-
-	var UInt128 = extend(function () {
-	  // Internal form: NaN or BigInteger
-	  this._value  = NaN;
-	}, UInt);
-
-	UInt128.width = 16;
-	UInt128.prototype = extend({}, UInt.prototype);
-	UInt128.prototype.constructor = UInt128;
-
-	var HEX_ZERO     = UInt128.HEX_ZERO = "00000000000000000000000000000000";
-	var HEX_ONE      = UInt128.HEX_ONE  = "00000000000000000000000000000000";
-	var STR_ZERO     = UInt128.STR_ZERO = utils.hexToString(HEX_ZERO);
-	var STR_ONE      = UInt128.STR_ONE = utils.hexToString(HEX_ONE);
-
-	exports.UInt128 = UInt128;
-
-
-/***/ },
-
-/***/ 31:
-/***/ function(module, exports, require) {
-
-	var sjcl    = require(11).sjcl;
-
-	var UInt160 = require(14).UInt160;
-	var UInt256 = require(21).UInt256;
-
-	function KeyPair() {
-	  this._curve  = sjcl.ecc.curves['c256'];
-	  this._secret = null;
-	  this._pubkey = null;
-	};
-
-	KeyPair.from_bn_secret = function (j) {
-	  return j instanceof this ? j.clone() : (new this()).parse_bn_secret(j);
-	};
-
-	KeyPair.prototype.parse_bn_secret = function (j) {
-	  this._secret = new sjcl.ecc.ecdsa.secretKey(sjcl.ecc.curves['c256'], j);
-	  return this;
-	};
-
-	/**
-	 * Returns public key as sjcl public key.
-	 *
-	 * @private
-	 */
-	KeyPair.prototype._pub = function () {
-	  var curve = this._curve;
-
-	  if (!this._pubkey && this._secret) {
-	    var exponent = this._secret._exponent;
-	    this._pubkey = new sjcl.ecc.ecdsa.publicKey(curve, curve.G.mult(exponent));
-	  }
-
-	  return this._pubkey;
-	};
-
-	/**
-	 * Returns public key in compressed format as bit array.
-	 *
-	 * @private
-	 */
-	KeyPair.prototype._pub_bits = function () {
-	  var pub = this._pub();
-
-	  if (!pub) {
-	    return null;
-	  }
-
-	  var point = pub._point, y_even = point.y.mod(2).equals(0);
-
-	  return sjcl.bitArray.concat(
-	    [sjcl.bitArray.partial(8, y_even ? 0x02 : 0x03)],
-	    point.x.toBits(this._curve.r.bitLength())
-	  );
-	};
-
-	/**
-	 * Returns public key as hex.
-	 *
-	 * Key will be returned as a compressed pubkey - 33 bytes converted to hex.
-	 */
-	KeyPair.prototype.to_hex_pub = function () {
-	  var bits = this._pub_bits();
-
-	  if (!bits) {
-	    return null;
-	  }
-
-	  return sjcl.codec.hex.fromBits(bits).toUpperCase();
-	};
-
-	function SHA256_RIPEMD160(bits) {
-	  return sjcl.hash.ripemd160.hash(sjcl.hash.sha256.hash(bits));
-	}
-
-	KeyPair.prototype.get_address = function () {
-	  var bits = this._pub_bits();
-
-	  if (!bits) {
-	    return null;
-	  }
-
-	  var hash = SHA256_RIPEMD160(bits);
-
-	  return UInt160.from_bits(hash);
-	};
-
-	KeyPair.prototype.sign = function (hash) {
-	  var hash = UInt256.from_json(hash);
-	  return this._secret.signDER(hash.to_bits(), 0);
-	};
-
-	exports.KeyPair = KeyPair;
-
-
-/***/ },
-
-/***/ 32:
 /***/ function(module, exports, require) {
 
 	/* WEBPACK VAR INJECTION */(function(require, module) {/** @fileOverview Javascript cryptography implementation.
@@ -13290,7 +13398,7 @@ var ripple =
 
 	// ----- for secp256k1 ------
 
-	// Overwrite NIST-P256 with secp256k1 so we're on even footing
+	// Overwrite NIST-P256 with secp256k1
 	sjcl.ecc.curves.c256 = new sjcl.ecc.curve(
 	    sjcl.bn.pseudoMersennePrime(256, [[0,-1],[4,-1],[6,-1],[7,-1],[8,-1],[9,-1],[32,-1]]),
 	    "0x14551231950b75fc4402da1722fc9baee",
@@ -13988,7 +14096,7 @@ var ripple =
 
 /***/ },
 
-/***/ 33:
+/***/ 30:
 /***/ function(module, exports, require) {
 
 	// Copyright (c) 2005  Tom Wu
@@ -15205,7 +15313,304 @@ var ripple =
 
 /***/ },
 
-/***/ 34:
+/***/ 31:
+/***/ function(module, exports, require) {
+
+	var utils   = require(11);
+	var sjcl    = utils.sjcl;
+	var config  = require(13);
+
+	var BigInteger = utils.jsbn.BigInteger;
+
+	var Base = require(6).Base;
+
+	//
+	// Abstract UInt class
+	//
+	// Base class for UInt??? classes
+	//
+
+	var UInt = function () {
+	  // Internal form: NaN or BigInteger
+	  this._value  = NaN;
+	};
+
+	UInt.json_rewrite = function (j, opts) {
+	  return this.from_json(j).to_json(opts);
+	};
+
+	// Return a new UInt from j.
+	UInt.from_generic = function (j) {
+	  if (j instanceof this) {
+	    return j.clone();
+	  } else {
+	    return (new this()).parse_generic(j);
+	  }
+	};
+
+	// Return a new UInt from j.
+	UInt.from_hex = function (j) {
+	  if (j instanceof this) {
+	    return j.clone();
+	  } else {
+	    return (new this()).parse_hex(j);
+	  }
+	};
+
+	// Return a new UInt from j.
+	UInt.from_json = function (j) {
+	  if (j instanceof this) {
+	    return j.clone();
+	  } else {
+	    return (new this()).parse_json(j);
+	  }
+	};
+
+	// Return a new UInt from j.
+	UInt.from_bits = function (j) {
+	  if (j instanceof this) {
+	    return j.clone();
+	  } else {
+	    return (new this()).parse_bits(j);
+	  }
+	};
+
+	// Return a new UInt from j.
+	UInt.from_bytes = function (j) {
+	  if (j instanceof this) {
+	    return j.clone();
+	  } else {
+	    return (new this()).parse_bytes(j);
+	  }
+	};
+
+	// Return a new UInt from j.
+	UInt.from_bn = function (j) {
+	  if (j instanceof this) {
+	    return j.clone();
+	  } else {
+	    return (new this()).parse_bn(j);
+	  }
+	};
+
+	UInt.is_valid = function (j) {
+	  return this.from_json(j).is_valid();
+	};
+
+	UInt.prototype.clone = function () {
+	  return this.copyTo(new this.constructor());
+	};
+
+	// Returns copy.
+	UInt.prototype.copyTo = function (d) {
+	  d._value = this._value;
+
+	  return d;
+	};
+
+	UInt.prototype.equals = function (d) {
+	  return this._value instanceof BigInteger && d._value instanceof BigInteger && this._value.equals(d._value);
+	};
+
+	UInt.prototype.is_valid = function () {
+	  return this._value instanceof BigInteger;
+	};
+
+	UInt.prototype.is_zero = function () {
+	  return this._value.equals(BigInteger.ZERO);
+	};
+
+	// value = NaN on error.
+	UInt.prototype.parse_generic = function (j) {
+	  // Canonicalize and validate
+	  if (config.accounts && j in config.accounts)
+	    j = config.accounts[j].account;
+
+	  switch (j) {
+	  case undefined:
+	  case "0":
+	  case this.constructor.STR_ZERO:
+	  case this.constructor.ACCOUNT_ZERO:
+	  case this.constructor.HEX_ZERO:
+	    this._value  = BigInteger.valueOf();
+	    break;
+
+	  case "1":
+	  case this.constructor.STR_ONE:
+	  case this.constructor.ACCOUNT_ONE:
+	  case this.constructor.HEX_ONE:
+	    this._value  = new BigInteger([1]);
+
+	    break;
+
+	  default:
+	    if ('string' !== typeof j) {
+		    this._value  = NaN;
+	    }
+	    else if (this.constructor.width === j.length) {
+		    this._value  = new BigInteger(utils.stringToArray(j), 256);
+	    }
+	    else if ((this.constructor.width*2) === j.length) {
+		    // XXX Check char set!
+		    this._value  = new BigInteger(j, 16);
+	    }
+	    else {
+		    this._value  = NaN;
+	    }
+	  }
+
+	  return this;
+	};
+
+	UInt.prototype.parse_hex = function (j) {
+	  if ('string' === typeof j &&
+	      j.length === (this.constructor.width * 2)) {
+	    this._value  = new BigInteger(j, 16);
+	  } else {
+	    this._value  = NaN;
+	  }
+
+	  return this;
+	};
+
+	UInt.prototype.parse_bits = function (j) {
+	  if (sjcl.bitArray.bitLength(j) !== this.constructor.width * 8) {
+	    this._value = NaN;
+	  } else {
+	    var bytes = sjcl.codec.bytes.fromBits(j);
+	    this.parse_bytes(bytes);
+	  }
+
+	  return this;
+	};
+
+
+	UInt.prototype.parse_bytes = function (j) {
+	  if (!Array.isArray(j) || j.length !== this.constructor.width) {
+		this._value = NaN;
+	  } else {
+		  this._value  = new BigInteger([0].concat(j), 256);
+	  }
+
+	  return this;
+	};
+
+
+	UInt.prototype.parse_json = UInt.prototype.parse_hex;
+
+	UInt.prototype.parse_bn = function (j) {
+	  if (j instanceof sjcl.bn &&
+	      j.bitLength() <= this.constructor.width * 8) {
+	    var bytes = sjcl.codec.bytes.fromBits(j.toBits());
+		  this._value  = new BigInteger(bytes, 256);
+	  } else {
+	    this._value = NaN;
+	  }
+
+	  return this;
+	};
+
+	// Convert from internal form.
+	UInt.prototype.to_bytes = function () {
+	  if (!(this._value instanceof BigInteger))
+	    return null;
+
+	  var bytes  = this._value.toByteArray();
+	  bytes = bytes.map(function (b) { return (b+256) % 256; });
+	  var target = this.constructor.width;
+
+	  // XXX Make sure only trim off leading zeros.
+	  bytes = bytes.slice(-target);
+	  while (bytes.length < target) bytes.unshift(0);
+
+	  return bytes;
+	};
+
+	UInt.prototype.to_hex = function () {
+	  if (!(this._value instanceof BigInteger))
+	    return null;
+
+	  var bytes = this.to_bytes();
+	  return sjcl.codec.hex.fromBits(sjcl.codec.bytes.toBits(bytes)).toUpperCase();
+	};
+
+	UInt.prototype.to_json = UInt.prototype.to_hex;
+
+	UInt.prototype.to_bits = function () {
+	  if (!(this._value instanceof BigInteger))
+	    return null;
+
+	  var bytes = this.to_bytes();
+
+	  return sjcl.codec.bytes.toBits(bytes);
+	};
+
+	UInt.prototype.to_bn = function () {
+	  if (!(this._value instanceof BigInteger))
+	    return null;
+
+	  var bits = this.to_bits();
+
+	  return sjcl.bn.fromBits(bits);
+	};
+
+	exports.UInt = UInt;
+
+	// vim:sw=2:sts=2:ts=8:et
+
+
+/***/ },
+
+/***/ 32:
+/***/ function(module, exports, require) {
+
+	function TransactionQueue() {
+	  this._queue  = [ ];
+	}
+
+	TransactionQueue.prototype.length = function() {
+	  return this._queue.length;
+	};
+
+	TransactionQueue.prototype.getBySubmissions = function(hash) {
+	  var result = false;
+
+	  top:
+	  for (var i=0, tx; tx=this._queue[i]; i++) {
+	    for (var j=0, id; id=tx.submittedTxnIDs[j]; j++) {
+	      if (hash === id) {
+	        result = tx;
+	        break top;
+	      };
+	    }
+	  }
+
+	  return result;
+	};
+
+	// ND: We are just removing the Transaction by identity
+	TransactionQueue.prototype.remove = function(removedTx) {
+	  top:
+	  for (var i = this._queue.length - 1; i >= 0; i--) {
+	    if (this._queue[i] === removedTx) {
+	      this._queue.splice(i, 1);
+	      break top;
+	    };
+	  };
+	};
+
+	[ 'forEach', 'push', 'shift', 'unshift' ].forEach(function(fn) {
+	  TransactionQueue.prototype[fn] = function() {
+	    Array.prototype[fn].apply(this._queue, arguments);
+	  };
+	});
+
+	exports.TransactionQueue = TransactionQueue;
+
+
+/***/ },
+
+/***/ 33:
 /***/ function(module, exports, require) {
 
 	exports.readIEEE754 = function(buffer, offset, isBE, mLen, nBytes) {
@@ -15296,113 +15701,143 @@ var ripple =
 
 /***/ },
 
+/***/ 34:
+/***/ function(module, exports, require) {
+
+	var sjcl    = require(11).sjcl;
+	var utils   = require(11);
+	var config  = require(13);
+	var extend  = require(36);
+
+	var BigInteger = utils.jsbn.BigInteger;
+
+	var UInt = require(31).UInt,
+	    Base = require(6).Base;
+
+	//
+	// UInt128 support
+	//
+
+	var UInt128 = extend(function () {
+	  // Internal form: NaN or BigInteger
+	  this._value  = NaN;
+	}, UInt);
+
+	UInt128.width = 16;
+	UInt128.prototype = extend({}, UInt.prototype);
+	UInt128.prototype.constructor = UInt128;
+
+	var HEX_ZERO     = UInt128.HEX_ZERO = "00000000000000000000000000000000";
+	var HEX_ONE      = UInt128.HEX_ONE  = "00000000000000000000000000000000";
+	var STR_ZERO     = UInt128.STR_ZERO = utils.hexToString(HEX_ZERO);
+	var STR_ONE      = UInt128.STR_ONE = utils.hexToString(HEX_ONE);
+
+	exports.UInt128 = UInt128;
+
+
+/***/ },
+
 /***/ 35:
 /***/ function(module, exports, require) {
 
-	module.exports = function indexOf (xs, x) {
-	    if (xs.indexOf) return xs.indexOf(x);
-	    for (var i = 0; i < xs.length; i++) {
-	        if (x === xs[i]) return i;
-	    }
-	    return -1;
+	var sjcl    = require(11).sjcl;
+
+	var UInt160 = require(16).UInt160;
+	var UInt256 = require(21).UInt256;
+
+	function KeyPair() {
+	  this._curve  = sjcl.ecc.curves['c256'];
+	  this._secret = null;
+	  this._pubkey = null;
+	};
+
+	KeyPair.from_bn_secret = function (j) {
+	  return j instanceof this ? j.clone() : (new this()).parse_bn_secret(j);
+	};
+
+	KeyPair.prototype.parse_bn_secret = function (j) {
+	  this._secret = new sjcl.ecc.ecdsa.secretKey(sjcl.ecc.curves['c256'], j);
+	  return this;
+	};
+
+	/**
+	 * Returns public key as sjcl public key.
+	 *
+	 * @private
+	 */
+	KeyPair.prototype._pub = function () {
+	  var curve = this._curve;
+
+	  if (!this._pubkey && this._secret) {
+	    var exponent = this._secret._exponent;
+	    this._pubkey = new sjcl.ecc.ecdsa.publicKey(curve, curve.G.mult(exponent));
+	  }
+
+	  return this._pubkey;
+	};
+
+	/**
+	 * Returns public key in compressed format as bit array.
+	 *
+	 * @private
+	 */
+	KeyPair.prototype._pub_bits = function () {
+	  var pub = this._pub();
+
+	  if (!pub) {
+	    return null;
+	  }
+
+	  var point = pub._point, y_even = point.y.mod(2).equals(0);
+
+	  return sjcl.bitArray.concat(
+	    [sjcl.bitArray.partial(8, y_even ? 0x02 : 0x03)],
+	    point.x.toBits(this._curve.r.bitLength())
+	  );
+	};
+
+	/**
+	 * Returns public key as hex.
+	 *
+	 * Key will be returned as a compressed pubkey - 33 bytes converted to hex.
+	 */
+	KeyPair.prototype.to_hex_pub = function () {
+	  var bits = this._pub_bits();
+
+	  if (!bits) {
+	    return null;
+	  }
+
+	  return sjcl.codec.hex.fromBits(bits).toUpperCase();
+	};
+
+	function SHA256_RIPEMD160(bits) {
+	  return sjcl.hash.ripemd160.hash(sjcl.hash.sha256.hash(bits));
 	}
+
+	KeyPair.prototype.get_address = function () {
+	  var bits = this._pub_bits();
+
+	  if (!bits) {
+	    return null;
+	  }
+
+	  var hash = SHA256_RIPEMD160(bits);
+
+	  return UInt160.from_bits(hash);
+	};
+
+	KeyPair.prototype.sign = function (hash) {
+	  var hash = UInt256.from_json(hash);
+	  return this._secret.signDER(hash.to_bits(), 0);
+	};
+
+	exports.KeyPair = KeyPair;
 
 
 /***/ },
 
 /***/ 36:
-/***/ function(module, exports, require) {
-
-	module.exports = Object.keys || function objectKeys(object) {
-		if (object !== Object(object)) throw new TypeError('Invalid object');
-		var result = [];
-		for (var name in object) {
-			if (Object.prototype.hasOwnProperty.call(object, name)) {
-				result.push(name);
-			}
-		}
-		return result;
-	};
-
-
-/***/ },
-
-/***/ 37:
-/***/ function(module, exports, require) {
-
-	module.exports = function isRegExp(re) {
-	  return re instanceof RegExp ||
-	    (typeof re === 'object' && Object.prototype.toString.call(re) === '[object RegExp]');
-	}
-
-/***/ },
-
-/***/ 38:
-/***/ function(module, exports, require) {
-
-	module.exports = typeof Array.isArray === 'function'
-	    ? Array.isArray
-	    : function (xs) {
-	        return Object.prototype.toString.call(xs) === '[object Array]'
-	    }
-	;
-
-	/*
-
-	alternative
-
-	function isArray(ar) {
-	  return ar instanceof Array ||
-	         Array.isArray(ar) ||
-	         (ar && ar !== Object.prototype && isArray(ar.__proto__));
-	}
-
-	*/
-
-/***/ },
-
-/***/ 39:
-/***/ function(module, exports, require) {
-
-	module.exports = Object.getOwnPropertyNames || function (obj) {
-	    var res = [];
-	    for (var key in obj) {
-	        if (Object.hasOwnProperty.call(obj, key)) res.push(key);
-	    }
-	    return res;
-	};
-
-/***/ },
-
-/***/ 40:
-/***/ function(module, exports, require) {
-
-	module.exports = Object.create || function (prototype, properties) {
-	    // from es5-shim
-	    var object;
-	    if (prototype === null) {
-	        object = { '__proto__' : null };
-	    }
-	    else {
-	        if (typeof prototype !== 'object') {
-	            throw new TypeError(
-	                'typeof prototype[' + (typeof prototype) + '] != \'object\''
-	            );
-	        }
-	        var Type = function () {};
-	        Type.prototype = prototype;
-	        object = new Type();
-	        object.__proto__ = prototype;
-	    }
-	    if (typeof properties !== 'undefined' && Object.defineProperties) {
-	        Object.defineProperties(object, properties);
-	    }
-	    return object;
-	};
-
-/***/ },
-
-/***/ 41:
 /***/ function(module, exports, require) {
 
 	var hasOwn = Object.prototype.hasOwnProperty;
@@ -15487,71 +15922,108 @@ var ripple =
 
 /***/ },
 
+/***/ 37:
+/***/ function(module, exports, require) {
+
+	module.exports = Object.keys || function objectKeys(object) {
+		if (object !== Object(object)) throw new TypeError('Invalid object');
+		var result = [];
+		for (var name in object) {
+			if (Object.prototype.hasOwnProperty.call(object, name)) {
+				result.push(name);
+			}
+		}
+		return result;
+	};
+
+
+/***/ },
+
+/***/ 38:
+/***/ function(module, exports, require) {
+
+	module.exports = Object.getOwnPropertyNames || function (obj) {
+	    var res = [];
+	    for (var key in obj) {
+	        if (Object.hasOwnProperty.call(obj, key)) res.push(key);
+	    }
+	    return res;
+	};
+
+/***/ },
+
+/***/ 39:
+/***/ function(module, exports, require) {
+
+	module.exports = Object.create || function (prototype, properties) {
+	    // from es5-shim
+	    var object;
+	    if (prototype === null) {
+	        object = { '__proto__' : null };
+	    }
+	    else {
+	        if (typeof prototype !== 'object') {
+	            throw new TypeError(
+	                'typeof prototype[' + (typeof prototype) + '] != \'object\''
+	            );
+	        }
+	        var Type = function () {};
+	        Type.prototype = prototype;
+	        object = new Type();
+	        object.__proto__ = prototype;
+	    }
+	    if (typeof properties !== 'undefined' && Object.defineProperties) {
+	        Object.defineProperties(object, properties);
+	    }
+	    return object;
+	};
+
+/***/ },
+
+/***/ 40:
+/***/ function(module, exports, require) {
+
+	module.exports = typeof Array.isArray === 'function'
+	    ? Array.isArray
+	    : function (xs) {
+	        return Object.prototype.toString.call(xs) === '[object Array]'
+	    }
+	;
+
+	/*
+
+	alternative
+
+	function isArray(ar) {
+	  return ar instanceof Array ||
+	         Array.isArray(ar) ||
+	         (ar && ar !== Object.prototype && isArray(ar.__proto__));
+	}
+
+	*/
+
+/***/ },
+
+/***/ 41:
+/***/ function(module, exports, require) {
+
+	module.exports = function isRegExp(re) {
+	  return re instanceof RegExp ||
+	    (typeof re === 'object' && Object.prototype.toString.call(re) === '[object RegExp]');
+	}
+
+/***/ },
+
 /***/ 42:
 /***/ function(module, exports, require) {
 
-	
-	function TransactionQueue() {
-	  var self = this;
-
-	  this._queue  = [ ];
-
-	  Object.defineProperty(this, '_length', {
-	    get: function() { return self._queue.length }
-	  });
-	}
-
-	TransactionQueue.prototype.length = function() {
-	  return this._queue.length;
-	};
-
-	TransactionQueue.prototype.indexOf = function(prop, val) {
-	  var index = -1;
-	  for (var i=0, tx; tx=this._queue[i]; i++) {
-	    if (tx[prop] === val) {
-	      index = i;
-	      break;
+	module.exports = function indexOf (xs, x) {
+	    if (xs.indexOf) return xs.indexOf(x);
+	    for (var i = 0; i < xs.length; i++) {
+	        if (x === xs[i]) return i;
 	    }
-	  }
-	  return index;
-	};
-
-	TransactionQueue.prototype.hasHash = function(hash) {
-	  return this.indexOf('hash', hash) !== -1;
-	};
-
-	TransactionQueue.prototype.get = function(prop, val) {
-	  var index = this.indexOf(prop, val);
-	  return index > -1 ? this._queue[index] : false;
-	};
-
-	TransactionQueue.prototype.removeSequence = function(sequence) {
-	  var result = [ ];
-	  for (var i=0, tx; tx=this._queue[i]; i++) {
-	    if (!tx.tx_json) continue;
-	    if (tx.tx_json.Sequence !== sequence) result.push(tx);
-	  }
-	  this._queue = result;
-	};
-
-	TransactionQueue.prototype.removeHash = function(hash) {
-	  var result = [ ];
-	  for (var i=0, tx; tx=this._queue[i]; i++) {
-	    if (!tx.tx_json) continue;
-	    if (tx._hash !== hash) result.push(tx);
-	  }
-	  this._queue = result;
-	};
-
-	TransactionQueue.prototype.forEach = function() {
-	  Array.prototype.forEach.apply(this._queue, arguments);
-	};
-
-	TransactionQueue.prototype.push = function() {
-	  Array.prototype.push.apply(this._queue, arguments);
-	};
-
-	exports.TransactionQueue = TransactionQueue;
+	    return -1;
+	}
 
 
 /***/ },
