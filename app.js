@@ -60,8 +60,8 @@ var pairs=[
 	["XRP","BTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
 	["XRP","LTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
 	["XRP","NXT/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
-	["NXT/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV","BTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
-	["NXT/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV","LTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
+	["BTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV","NXT/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
+	// ["LTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV","NXT/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
 	//JustCoin
 	["XRP","BTC/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"]
 	// ["XRP","NOK/rJHygWcTLVpSXkowott6kzgZU6viQSVYM1"],
