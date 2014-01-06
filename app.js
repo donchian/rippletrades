@@ -79,7 +79,7 @@ var precisions={
 	"JPY": 5,
 	"EUR": 5,
 	"USD": 5,
-	"BTC": 5,
+	"BTC": 8,
 	"NXT": 5,
 	"LTC": 5,
 	"XRP": 5,
