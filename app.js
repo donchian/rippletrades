@@ -57,6 +57,7 @@ var pairs=[
 	["XRP","CNY/rnuF96W4SZoCJmbHYBFoJZpR8eCaxNvekK"],
 	["XRP","LTC/rnuF96W4SZoCJmbHYBFoJZpR8eCaxNvekK"],
 	//Peercover
+	["XRP","USD/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
 	["XRP","BTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
 	["XRP","LTC/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
 	["XRP","NXT/ra9eZxMbJrUcgV8ui7aPc161FgrqWScQxV"],
